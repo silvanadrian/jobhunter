@@ -1,0 +1,103 @@
+name: Belege bestätigen
+
+# Im Profil-Entwurf (profil/…) und im Entwurf einer Ergänzung (ergaenzen/…,
+# Formular «Profil ergänzen», nur die neuen Belege) steht ein Kommentar mit einer
+# Checkliste (ein Kästchen pro Beleg). Hakt die Besitzerin oder der Besitzer ein Kästchen an oder ab, setzt
+# dieser Workflow den Beleg in profile/evidence.md auf [bestätigt] bzw.
+# [unbestätigt], gleicht profile/cv.yaml an (nur bestätigte Punkte bleiben),
+# prüft mit der Ehrlichkeits-Prüfung und meldet den Stand in einem zweiten
+# Kommentar. Jeder Klick löst einen Lauf aus; die Läufe warten aufeinander,
+# und jeder liest den aktuellen Stand der Checkliste.
+on:
+  issue_comment:
+    types: [edited]
+
+permissions:
+  actions: read      # bei einem Fehler: Startzeit des Laufs lesen
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: belege-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  confirm:
+    if: >-
+      github.event.comment.user.login == 'github-actions[bot]' &&
+      contains(github.event.comment.body, '<!-- jobhunter:belege branch=') &&
+      github.event.sender.login == github.repository_owner
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NUMBER: ${{ github.event.issue.number }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Checkliste übernehmen
+        id: apply
+        run: |
+          # Aktuellen Stand lesen (spätere Klicks können schon gespeichert sein).
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" --jq .body > "$RUNNER_TEMP/liste.md"
+          branch=$(python -m jobwatch.belege zweig "$RUNNER_TEMP/liste.md")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout "$branch"
+          args=()
+          case "$branch" in
+            ergaenzen/*)
+              # Ergänzung: nur die neuen Belege der Checkliste; alte Einträge bleiben unberührt.
+              draft=$(git log --format=%H --grep='Profil-Ergänzung entworfen' -1 origin/main..HEAD)
+              args+=(--scope-boxes) ;;
+            *)
+              draft=$(git log --format=%H --grep='Profil aus dem Lebenslauf entworfen' -1) ;;
+          esac
+          if [ -n "$draft" ]; then
+            git show "$draft:profile/cv.yaml" > "$RUNNER_TEMP/entwurf.yaml"
+            args+=(--draft-cv "$RUNNER_TEMP/entwurf.yaml")
+          fi
+          python -m jobwatch.belege anwenden "$RUNNER_TEMP/liste.md" "${args[@]}" | tee "$RUNNER_TEMP/stand.txt"
+          git add profile/evidence.md profile/cv.yaml
+          git diff --staged --quiet || { git commit -m "Belege über die Checkliste bestätigt" && git push origin "$branch"; }
+
+      - name: Ehrlichkeits-Prüfung
+        id: guard
+        continue-on-error: true
+        run: python -m jobwatch.guard | tee "$RUNNER_TEMP/guard.txt"
+
+      - name: Stand melden
+        if: ${{ !cancelled() }}
+        env:
+          GUARD: ${{ steps.guard.outcome }}
+        run: |
+          {
+            echo "<!-- jobhunter:belege-stand -->"
+            echo "**Stand:** $(cat "$RUNNER_TEMP/stand.txt" 2>/dev/null)"
+            echo
+            if [ "$GUARD" = success ]; then
+              echo "✅ Ehrlichkeits-Prüfung bestanden. Fertig? Dann den Entwurf übernehmen:"
+              echo "oben im Reiter **Conversation** ganz unten auf den grünen Knopf **«Merge pull request»**, dann **«Confirm merge»**."
+            else
+              echo "❌ Ehrlichkeits-Prüfung noch nicht bestanden:"
+              echo; echo '```text'; cat "$RUNNER_TEMP/guard.txt" 2>/dev/null; echo '```'
+            fi
+          } > stand.md
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- jobhunter:belege-stand -->")))][0].id // empty')
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@stand.md >/dev/null
+          else
+            gh pr comment "$NUMBER" --body-file stand.md
+          fi
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Die Checkliste konnte nicht gespeichert werden."

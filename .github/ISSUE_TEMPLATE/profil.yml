@@ -1,0 +1,67 @@
+name: Profil
+description: Lade deinen Lebenslauf hoch. Daraus entsteht ein Entwurf deiner Belege, den du bestätigst.
+title: "Profil"
+labels: [profil]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Der Entwurf landet in einem Pull Request. **Jeder Eintrag ist zuerst
+        «unbestätigt»** und wird erst nach deiner Prüfung verwendet.
+        Dieses Repository muss privat bleiben: Lebenslauf und Foto liegen darin.
+        Keine Ausweise, AHV-Nummern oder Bankangaben hochladen.
+  - type: textarea
+    id: lebenslauf-text
+    attributes:
+      label: Lebenslauf als Text
+      description: Deinen Lebenslauf öffnen (Word, PDF o. ä.), alles markieren, kopieren und hier einfügen. Die Formatierung spielt keine Rolle.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        **Foto (optional):** Im Reiter **Code** den Ordner **profile** öffnen,
+        **Add file → Upload files**, das Bild (JPG oder PNG) hineinziehen,
+        **Commit changes**. Ziehst du es hier ins Formular, kommt es nicht an:
+        GitHub gibt Dateien aus Issues privater Repositories nicht an Workflows weiter.
+  - type: dropdown
+    id: stil
+    attributes:
+      label: Stil des Lebenslaufs
+      description: "Beispiele siehe docs/stile im Repository. Später jederzeit änderbar (profile/cv.yaml, style: theme)."
+      options:
+        - "klassisch (blaue Akzente, wie in der Anleitung)"
+        - "schlicht (schwarz-grau, für Banken, Verwaltung, Gesundheitswesen)"
+        - "kompakt (enger, für lange Lebensläufe)"
+  - type: input
+    id: kuendigungsfrist
+    attributes:
+      label: Kündigungsfrist (Monate)
+      placeholder: "3"
+    validations:
+      required: true
+  - type: dropdown
+    id: monatsende
+    attributes:
+      label: Kündigung auf Monatsende?
+      options: ["Ja, auf Monatsende", "Nein, jederzeit"]
+  - type: input
+    id: lohn
+    attributes:
+      label: Lohnvorstellung
+      placeholder: "CHF 110'000–120'000 pro Jahr"
+  - type: input
+    id: pensum
+    attributes:
+      label: Pensum
+      placeholder: "80–100%"
+  - type: input
+    id: vorort
+    attributes:
+      label: Tage vor Ort
+      placeholder: "3 Tage pro Woche"
+  - type: input
+    id: bewilligung
+    attributes:
+      label: Arbeitsbewilligung / Staatsbürgerschaft
+      description: Nur angeben, was für deine Bewerbungen relevant ist.

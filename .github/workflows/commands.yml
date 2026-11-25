@@ -1,0 +1,120 @@
+name: Status-Befehle
+
+# Kommentar-Befehle in Issues (nur vom Repository-Besitzer):
+#   /status <slug> <status> [Notiz]   z. B. /status acme-tech-lead interview Gespräch am 3.12.
+#   /outcome <status> [Notiz]         im Issue einer Bewerbung (Slug wird erkannt)
+#   /aufraeumen                       im Aufbewahrungs-Issue: alte Bewerbungen archivieren/löschen
+# Status: eingereicht, interview, absage, angebot, angenommen, keine-antwort,
+# zurückgezogen. Mit «gap: ...» in der Notiz hältst du fest, woran eine Absage lag.
+#
+# Hält das Ergebnis in applications/<slug>/application.md fest, schliesst das
+# Bewerbungs-Issue bei einem abschliessenden Status und schliesst das Wochen-
+# Issue, sobald alle offenen Bewerbungen beantwortet sind. Einfacher geht es
+# im Bewerbungs-Issue mit der Checkliste «Stand dieser Bewerbung» (stand.yml);
+# die Befehle bleiben für Notizen und Gründe (gap: …). Nach einem Befehl wird
+# die Checkliste nachgeführt.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read      # bei einem Fehler: Startzeit des Laufs lesen
+  contents: write
+  issues: write
+
+concurrency:
+  group: records
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event.comment.user.login == github.repository_owner &&
+      !startsWith(github.event.comment.body, '/paket') && !startsWith(github.event.comment.body, '/profil') &&
+      !startsWith(github.event.comment.body, '/ergaenzen') && !startsWith(github.event.comment.body, '/ergänzen') &&
+      (contains(github.event.comment.body, '/status') || contains(github.event.comment.body, '/outcome') ||
+       startsWith(github.event.comment.body, '/aufraeumen'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+      COMMENT: ${{ github.event.comment.body }}
+      BODY: ${{ github.event.issue.body }}
+      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Befehle anwenden
+        id: apply
+        run: |
+          python - <<'PY'
+          import os, re
+          comment, body = os.environ["COMMENT"], os.environ.get("BODY") or ""
+          # "/outcome <status>" im Issue einer Bewerbung: Slug aus dem Marker ergänzen.
+          slug = re.search(r"<!-- application:([\w.-]+) -->", body)
+          lines = []
+          for line in comment.splitlines():
+              line = line.strip()
+              if line.startswith("/outcome") and slug:
+                  parts = line.split(maxsplit=1)
+                  rest = parts[1] if len(parts) > 1 else ""
+                  line = f"/status {slug.group(1)} {rest}"
+              lines.append(line)
+          open("commands.txt", "w").write("\n".join(lines))
+          PY
+          python -m jobwatch.records status < commands.txt > result.md || true
+          cat result.md
+          gh issue comment "$ISSUE" --body-file result.md
+
+      - name: Aufräumen (Aufbewahrung)
+        if: startsWith(github.event.comment.body, '/aufraeumen')
+        run: |
+          enabled=$(python -m jobwatch.config get retention.enabled || echo False)
+          if [ "$enabled" != "True" ]; then
+            gh issue comment "$ISSUE" --body "Aufbewahrung ist ausgeschaltet (retention.enabled: false in jobhunter.yml)."
+            exit 0
+          fi
+          months=$(python -m jobwatch.config get retention.months)
+          mode=$(python -m jobwatch.config get retention.mode)
+          python -m jobwatch.records retention --months "$months" --apply "$mode" > done.txt
+          { echo "Aufgeräumt ($mode):"; sed 's/^/- /' done.txt; } > msg.md
+          gh issue comment "$ISSUE" --body-file msg.md
+          gh issue close "$ISSUE"
+
+      - name: Speichern, Issues schliessen, Board
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A applications archive 2>/dev/null || true
+          git diff --staged --quiet && exit 0
+          git commit -m "Bewerbungsstatus aktualisiert"
+          git push
+          python - <<'PY' > actions.txt
+          from jobwatch.records import load_all, is_open
+          for r in load_all():
+              print(r["slug"], r["status"], "open" if is_open(r) else "final")
+          PY
+          while read -r slug status state; do
+            number=$(gh issue list --state open --label application --search "\"application:$slug\" in:body" --json number --jq '.[0].number // empty')
+            [ -z "$number" ] && continue
+            python -m jobwatch.board move "$number" "$status" || true
+            # Checkliste «Stand dieser Bewerbung» an das Protokoll angleichen.
+            if grep -q "\`$slug\`" result.md; then scripts/stand-kommentar.sh "$number" "$slug" update < /dev/null || true; fi
+            if [ "$state" = "final" ]; then gh issue close "$number" --comment "Abgeschlossen: $status."; fi
+          done < actions.txt
+          # Wochen-Check-in schliessen, wenn alle offenen Bewerbungen beantwortet sind.
+          if gh issue view "$ISSUE" --json labels --jq '.labels[].name' | grep -qx checkin; then
+            since=$(gh issue view "$ISSUE" --json createdAt --jq '.createdAt[0:10]')
+            printf '%s' "$BODY" > checkin.md
+            if python -m jobwatch.records checkin-done checkin.md --since "$since"; then
+              gh issue close "$ISSUE" --comment "Alle offenen Bewerbungen beantwortet. Danke!"
+            fi
+          fi
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Der Befehl konnte nicht ausgeführt werden."

@@ -1,0 +1,11 @@
+{
+  "name": "jobhunter",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  "features": {},
+  "postCreateCommand": "pip install -r requirements.txt && curl -fsSL -o /tmp/typst.tar.xz https://github.com/typst/typst/releases/download/v0.13.1/typst-x86_64-unknown-linux-musl.tar.xz && echo '7d214bfeffc2e585dc422d1a09d2b144969421281e8c7f5d784b65fc69b5673f  /tmp/typst.tar.xz' | sha256sum -c - && sudo tar -xf /tmp/typst.tar.xz -C /opt && sudo ln -sf /opt/typst-x86_64-unknown-linux-musl/typst /usr/local/bin/typst && sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils",
+  "customizations": {
+    "vscode": {
+      "extensions": ["myriad-dreamin.tinymist", "ms-python.python", "redhat.vscode-yaml"]
+    }
+  }
+}

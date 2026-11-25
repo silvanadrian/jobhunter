@@ -1,0 +1,116 @@
+# Basis-Lebenslauf (Daten). Die Vorlage cv/cv.typ liest diese Datei.
+#
+# Beispielperson: Alex Muster ist frei erfunden. Ersetze alles durch deine
+# eigenen Angaben. Jede Aussage (Zusammenfassung, Punkte, Kenntnisse) nennt
+# unter `evidence:` die IDs aus profile/evidence.md, die sie belegen.
+# Rollen-IDs (R1, R2 ...) und Punkt-IDs (B1, B2 ...) bleiben stabil:
+# Bewerbungsvarianten wählen Punkte über diese IDs aus.
+
+lang: de                    # de oder en: Sprache der Abschnittstitel
+
+# Aussehen von Lebenslauf und Motivationsschreiben (Beispiele: docs/stile/).
+# Eine Bewerbungsvariante kann einzelne Werte mit eigenem `style:` überschreiben.
+style:
+  theme: klassisch          # klassisch | schlicht (schwarz/grau) | kompakt (passt mehr auf 2 Seiten)
+  accent: "#0084B8"         # Akzentfarbe als Hex, in Anführungszeichen; bei «schlicht» ignoriert
+  photo: true               # false = kein Foto, auch wenn profile/foto.jpg existiert
+
+person:
+  first_name: Alex
+  last_name: Muster
+  position: Senior Software Engineer
+  address: Musterstrasse 1, 8000 Zürich
+  phone: "+41 00 000 00 00"
+  email: alex@example.com
+  homepage: example.com
+  github: example
+  linkedin: example
+  # Foto: einfach als profile/foto.jpg ablegen (oder im Formular «Profil»
+  # hochladen). Fehlt die Datei, erscheint der Kopf ohne Foto.
+
+summary:
+  text: >-
+    Software Engineer mit acht Jahren Erfahrung in der Webentwicklung, zuletzt
+    mit Verantwortung für die technische Weiterentwicklung eines Kundenportals.
+    Arbeitet vor allem mit TypeScript, React und Python, mit Fokus auf
+    Testautomatisierung und Barrierefreiheit.
+  evidence: [E1, E2, E5, E6]
+
+experience:
+  - id: R1
+    title: Senior Software Engineer
+    org: Contoso AG
+    location: Zürich
+    dates: 03/2022 – heute
+    bullets:
+      - id: B1
+        text: Verantwortlich für die technische Weiterentwicklung des Kundenportals (React, TypeScript) in einem Team von fünf Personen
+        evidence: [E1]
+      - id: B2
+        text: Einführung von Playwright-End-to-End-Tests in der CI-Pipeline
+        evidence: [E2]
+      - id: B3
+        text: Begleitung von zwei Junior-Entwicklerinnen durch Code-Reviews und Pair-Programming
+        evidence: [E3]
+      - id: B4
+        text: Migration des Build-Prozesses von Jenkins auf GitHub Actions
+        evidence: [E4]
+  - id: R2
+    title: Software Engineer
+    org: Northwind Analytics GmbH
+    location: Bern
+    dates: 08/2018 – 02/2022
+    bullets:
+      - id: B5
+        text: Entwicklung von REST-APIs in Python (Django) für interne Auswertungen
+        evidence: [E5]
+      - id: B6
+        text: Umsetzung barrierefreier Formulare nach WCAG 2.1 AA
+        evidence: [E6]
+      - id: B7
+        text: Betreuung des PostgreSQL-Datenmodells inklusive Migrationen
+        evidence: [E7]
+  - id: R3
+    title: Junior Web Developer
+    org: Fabrikam Web AG
+    location: Basel
+    dates: 09/2016 – 07/2018
+    bullets:
+      - id: B8
+        text: Umsetzung von Kundenwebsites mit Vue.js und PHP
+        evidence: [E8]
+
+education:
+  - degree: Master of Science in Informatik
+    school: Hochschule Musterstadt
+    location: ""
+    dates: 2014 – 2016
+  - degree: Bachelor of Science in Informatik
+    school: Fachhochschule Beispielstadt
+    location: ""
+    dates: 2011 – 2014
+
+skills:
+  - category: Sprachen & Frameworks
+    items: TypeScript, React, Vue.js, Python (Django), Node.js (Grundkenntnisse)
+    evidence: [E1, E5, E8, E9]
+  - category: Testing & Qualität
+    items: Playwright, Jest, Barrierefreiheit (WCAG 2.1 AA)
+    evidence: [E2, E6]
+  - category: Infrastruktur
+    items: GitHub Actions, Docker, PostgreSQL
+    evidence: [E4, E7]
+  - category: Privat
+    items: Rust (Hobbyprojekte)
+    evidence: [E10]
+
+languages:
+  - name: Deutsch
+    level: Muttersprache
+  - name: Englisch
+    level: verhandlungssicher (C1)
+  - name: Französisch
+    level: Grundkenntnisse (B1)
+
+# Reihenfolge der Abschnitte. Varianten können sie überschreiben.
+sections: [summary, experience, education, skills, languages]

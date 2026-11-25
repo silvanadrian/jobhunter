@@ -1,0 +1,102 @@
+name: Einrichtung
+
+# Wertet das Issue-Formular «Einrichtung» aus: schreibt bzw. aktualisiert
+# jobhunter.yml, legt alle Labels an, prüft die Feeds und schreibt das Ergebnis
+# als Kommentar. Das Formular erneut ausfüllen = Einstellungen aktualisieren.
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: write
+  issues: write
+  actions: write   # Status-Workflow anstossen
+
+concurrency:
+  group: config
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    if: >-
+      (contains(github.event.issue.labels.*.name, 'einrichtung') ||
+       contains(github.event.issue.body, '### Wunschtitel und Stichwörter')) &&
+      github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+      BODY: ${{ github.event.issue.body }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Labels anlegen
+        run: |
+          while IFS='|' read -r name color text; do
+            gh label create "$name" --color "$color" --description "$text" --force >/dev/null
+          done <<'LABELS'
+          jobwatch|0E8A16|Neue Stellen aus der täglichen Suche
+          prepare|1D76DB|Bewerbungspaket für diese Stelle vorbereiten
+          prepare-task|5319E7|Bewerbungspaket in Arbeit
+          application|5319E7|Bewerbungen
+          checkin|FBCA04|Wochen-Check-in
+          erinnerung|D93F0B|Frist oder Nachfassen
+          status|BFD4F2|Zustand der Einrichtung
+          einrichtung|C5DEF5|Formular Einrichtung
+          profil|C5DEF5|Formular Profil
+          profil-ergaenzen|C5DEF5|Formular Profil ergänzen
+          aufbewahrung|EDEDED|Alte Bewerbungen aufräumen
+          LABELS
+
+      - name: jobhunter.yml schreiben
+        id: write
+        run: |
+          printf '%s' "$BODY" > form.md
+          set +e
+          python -m jobwatch.forms einrichtung form.md > result.md 2> error.txt
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Die Einrichtung hat nicht geklappt:"; echo; echo '```text'; cat error.txt; echo '```'
+              echo; echo "Bitte das Formular bearbeiten (… → Edit) und korrigieren."; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jobhunter.yml
+          git diff --staged --quiet || git commit -m "Einrichtung über das Formular aktualisiert"
+          git push
+
+      - name: Prüfen und berichten
+        run: |
+          python -m jobwatch check --markdown > check.md || true
+          agent=$(python -m jobwatch.config get agent || true)
+          profil_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues/new?template=profil.yml"
+          { echo "✅ **Eingerichtet.** Die erste Stellensuche läuft gerade an; in ein paar Minuten erscheint ein Issue mit den Stellen, die heute passen. Danach kommt jeden Werktag früh ein neues."
+            echo
+            echo "### Als Nächstes: [Formular «Profil» ausfüllen →]($profil_url)"
+            echo
+            echo "Dort fügst du deinen Lebenslauf ein. Daraus entsteht dein Profil, auf dem jede Bewerbung aufbaut."
+            echo
+            echo "<details><summary>Gespeicherte Einstellungen und Quellen</summary>"; echo
+            cat result.md; echo; cat check.md; echo
+            if [ "$agent" = "copilot-cli" ]; then
+              echo "**Bewerbungspakete mit der GitHub Copilot CLI:** läuft in GitHub Actions mit dem eingebauten Token; dein Konto braucht einen Copilot-Plan (Copilot Free genügt, Kontingent begrenzt: <https://github.com/settings/copilot>). Klappt es nicht, erklärt ein Kommentar den Grund und bietet Kopieren & Einfügen an."; echo
+            elif [ "$agent" = "kopieren" ]; then
+              echo "**Bewerbungspakete per Kopieren & Einfügen:** Nach \`/prepare <Link>\` erscheint ein Auftrag zum Kopieren in deinen Chat (claude.ai, ChatGPT o. ä.). Die Antwort fügst du mit \`/paket\` in der ersten Zeile wieder ein. Prüfe vorher in den Datenschutz-Einstellungen deines Chat-Anbieters, ob das Training mit deinen Daten ausgeschaltet ist."; echo
+            fi
+            echo "Ändern: dieses Formular einfach nochmals ausfüllen."
+            echo "</details>"; } > msg.md
+          gh issue comment "$ISSUE" --body-file msg.md
+          gh issue close "$ISSUE"
+          gh workflow run status.yml || true
+          gh workflow run jobwatch.yml || true
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Die Einrichtung hat nicht geklappt."

@@ -1,0 +1,87 @@
+name: Einrichtung
+description: Sag, welche Stellen du suchst. Daraus entsteht deine Konfiguration (jobhunter.yml).
+title: "Einrichtung"
+labels: [einrichtung]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fülle die Felder aus und klicke auf **Create**. Nach ein bis zwei Minuten
+        antwortet ein Kommentar, ob alles geklappt hat. Später ändern: dieses
+        Formular einfach nochmals ausfüllen.
+
+        **In der Schweiz genügen Stichwörter und Orte.** Die tägliche Suche
+        durchsucht dann automatisch **jobs.ch** an deinen Orten. Firmen
+        einzutragen ist optional.
+  - type: textarea
+    id: titel
+    attributes:
+      label: Wunschtitel und Stichwörter
+      description: Wörter, die im Stellentitel vorkommen sollen. Komma oder neue Zeile trennt.
+      placeholder: "Software Engineer, Entwickler, Architect"
+    validations:
+      required: true
+  - type: input
+    id: stufe
+    attributes:
+      label: Stufe
+      description: Mindestens eines dieser Wörter muss im Titel stehen. «alle» für jede Stufe.
+      value: "Senior, Lead, Leiter, Head, Principal"
+  - type: textarea
+    id: orte
+    attributes:
+      label: Orte
+      description: Städte oder Regionen, in denen du arbeiten kannst.
+      placeholder: "Zürich, Winterthur, Baden"
+    validations:
+      required: true
+  - type: input
+    id: land
+    attributes:
+      label: Land
+      value: "Schweiz, Switzerland"
+  - type: dropdown
+    id: remote
+    attributes:
+      label: Remote
+      description: Voll-Remote-Stellen im selben Land mitzählen?
+      options: ["Ja", "Nein"]
+    validations:
+      required: true
+  - type: input
+    id: pensum
+    attributes:
+      label: Pensum
+      placeholder: "80–100%"
+  - type: textarea
+    id: ausschluss
+    attributes:
+      label: Ausschlusswörter
+      description: Titel mit diesen Wörtern nie anzeigen.
+      placeholder: "Praktikum, Sales"
+  - type: textarea
+    id: firmen
+    attributes:
+      label: Wunschfirmen (optional, Karriereseiten-URLs, eine pro Zeile)
+      description: Zusätzlich zu jobs.ch. Sinnvoll für Firmen, die nicht auf jobs.ch ausschreiben. Link zur Karriereseite oder zu einer einzelnen Stelle. Unterstützt u. a. Greenhouse, Lever, Ashby, Personio, Workday. Leer lassen geht.
+      placeholder: |
+        https://boards.greenhouse.io/beispiel
+        https://jobs.lever.co/beispiel
+  - type: dropdown
+    id: benachrichtigung
+    attributes:
+      label: Benachrichtigung
+      options:
+        - "GitHub (Issue + App/E-Mail von GitHub)"
+        - "Zusätzlich eigene E-Mail (braucht Secret RESEND_API_KEY, siehe docs/FORTGESCHRITTEN.md)"
+  - type: dropdown
+    id: assistent
+    attributes:
+      label: Assistent für Bewerbungspakete
+      description: "kopieren ist gratis und braucht nichts: du kopierst einen Auftrag in deinen Chat (claude.ai, ChatGPT o. ä.) und fügst die Antwort mit /paket wieder ein. copilot-cli schreibt direkt in GitHub, gratis mit Copilot Free (begrenztes Kontingent). lokal heisst, du arbeitest auf deinem Rechner. Der Coding-Agent (copilot) braucht Copilot Pro oder höher, claude einen Anthropic-API-Schlüssel (docs/FORTGESCHRITTEN.md, «Was kostet das?»)."
+      options:
+        - "kopieren (Standard, gratis: Kopieren & Einfügen in deinen Chat)"
+        - "copilot-cli (gratis mit Copilot Free, begrenzt)"
+        - "lokal (ohne KI in GitHub)"
+        - "copilot (Coding-Agent, ab Copilot Pro)"
+        - "claude (Claude Code Action, Anthropic-API)"

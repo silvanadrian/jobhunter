@@ -1,0 +1,42 @@
+name: Profil ergänzen
+description: Neue Stelle, Kurs, Projekt oder Kenntnis eintragen. Daraus entsteht ein Entwurf, der dein Profil nur ergänzt.
+title: "Profil ergänzen"
+labels: [profil-ergaenzen]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Neue Einträge landen in einem **Entwurf (Pull Request)**. Jeder neue Eintrag ist
+        zuerst «unbestätigt»; du hakst in einer Checkliste an, was genau so stimmt.
+        **Bestehende Einträge werden nie geändert oder gelöscht.**
+  - type: textarea
+    id: neu
+    attributes:
+      label: Was ist neu?
+      description: |
+        In eigenen Worten, so genau wie möglich. Zum Beispiel:
+        - **Neue Stelle:** Titel, Firma, Ort, Zeitraum (z. B. «seit 03/2026») und deine Tätigkeiten.
+        - **Neue Tätigkeit in einer bisherigen Stelle:** welche Stelle und was du dort neu machst.
+        - **Kurs oder Zertifikat:** Name, Anbieter, Datum.
+        - **Kenntnis:** was genau und wie gut (z. B. «Kotlin, Grundkenntnisse», «Rust, nur privat»).
+        Nur was stimmt: keine Zahlen oder Titel, die du nicht belegen kannst.
+      placeholder: |
+        Neue Stelle seit 03/2026: Teamleiter Entwicklung bei Beispiel AG, Bern.
+        - Führe ein Team von vier Entwicklerinnen und Entwicklern (disziplinarisch).
+        - Verantwortlich für die Einführung von Kotlin im Backend.
+        Kurs: AWS Certified Cloud Practitioner, Amazon Web Services, 11/2025.
+    validations:
+      required: true
+  - type: input
+    id: quelle
+    attributes:
+      label: Quelle (optional)
+      description: Woher stammt der Nachweis? Zum Beispiel Arbeitszeugnis 2026, Zertifikat, Projekt, Repository. Das Dokument selbst bitte nicht hochladen.
+      placeholder: "Arbeitsvertrag 2026, Zertifikat vom 14.11.2025"
+  - type: markdown
+    attributes:
+      value: |
+        Nach **Create** erscheint (beim Standard «Kopieren & Einfügen») ein Kommentar mit
+        einem Textblock: in deinen Chat kopieren und die Antwort mit `/ergaenzen` in der
+        ersten Zeile hier als Kommentar einfügen. Mit der Copilot CLI entsteht der Entwurf
+        direkt.

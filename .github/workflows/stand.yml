@@ -1,0 +1,79 @@
+name: Stand einer Bewerbung
+
+# Im Bewerbungs-Issue steht ein Kommentar «Stand dieser Bewerbung» mit einer
+# Checkliste (Eingereicht, 1./2. Gespräch, weitere Runde, Angebot, Absage,
+# Zurückgezogen). Hakt die Besitzerin oder der Besitzer ein Kästchen an, hält
+# dieser Workflow denselben Eintrag fest wie der passende `/outcome`-Befehl:
+# Protokoll und Front Matter in applications/<slug>/application.md, Board,
+# bei abschliessendem Status Issue schliessen. Schon Festgehaltenes wird nicht
+# doppelt eingetragen, ein weggenommenes Häkchen ändert nichts. Jeder Lauf
+# liest den aktuellen Stand des Kommentars (spätere Klicks können schon
+# gespeichert sein).
+on:
+  issue_comment:
+    types: [edited]
+
+permissions:
+  actions: read      # bei einem Fehler: Startzeit des Laufs lesen
+  contents: write
+  issues: write
+
+concurrency:
+  group: stand-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event.comment.user.login == 'github-actions[bot]' &&
+      contains(github.event.comment.body, '<!-- jobhunter:stand slug=') &&
+      github.event.sender.login == github.repository_owner
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NUMBER: ${{ github.event.issue.number }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Häkchen übernehmen
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" --jq .body > "$RUNNER_TEMP/stand.md"
+          slug=$(python -m jobwatch.stand slug "$RUNNER_TEMP/stand.md")
+          set +e
+          python -m jobwatch.stand anwenden "$RUNNER_TEMP/stand.md" > result.md
+          code=$?
+          set -e
+          cat result.md
+          if [ "$code" -eq 3 ]; then
+            # Nichts Neues. Nur ein weggenommenes Häkchen wird kurz erklärt.
+            [ -s result.md ] && gh issue comment "$NUMBER" --body-file result.md
+            exit 0
+          fi
+          [ "$code" -ne 0 ] && exit "$code"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "applications/$slug/application.md"
+          git commit -m "Bewerbungsstatus über die Checkliste aktualisiert"
+          # Andere Workflows (z. B. /outcome-Befehle) schreiben auch auf main.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push; then pushed=true; break; fi
+            git pull --rebase --quiet
+          done
+          $pushed || { echo "::error::Speichern auf main fehlgeschlagen"; exit 1; }
+          gh issue comment "$NUMBER" --body-file result.md
+          status=$(python -c "from jobwatch.records import parse; print(parse('applications/$slug/application.md')['status'])")
+          python -m jobwatch.board move "$NUMBER" "$status" || true
+          if python -c "import sys; from jobwatch.outcome import FINAL; sys.exit(0 if '$status' in FINAL else 1)"; then
+            gh issue close "$NUMBER" || true
+          fi
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Der Stand der Bewerbung konnte nicht gespeichert werden."

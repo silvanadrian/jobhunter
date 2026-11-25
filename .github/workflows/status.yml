@@ -1,0 +1,35 @@
+name: Status der Einrichtung
+
+# Prüft wöchentlich (und nach der Einrichtung) Konfiguration, Profil und jeden
+# Firmen-Feed und hält das Ergebnis in EINEM angehefteten Issue «Status» aktuell,
+# mit Tipps für jeden fehlerhaften Feed.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+      - name: Status-Issue aktualisieren
+        run: |
+          python -m jobwatch check --markdown > status.md || true
+          echo >> status.md
+          echo "_Zuletzt geprüft: $(date -u +%Y-%m-%d) — wird wöchentlich aktualisiert._" >> status.md
+          gh label create status --color BFD4F2 --description "Zustand der Einrichtung" 2>/dev/null || true
+          number=$(gh issue list --state open --label status --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file status.md >/dev/null
+          else
+            url=$(gh issue create --title "Status" --body-file status.md --label status)
+            gh issue pin "${url##*/}" || true
+          fi

@@ -1,0 +1,106 @@
+name: Neue Version der Vorlage
+
+# Eine Kopie aus «Use this template» hat keine Verbindung zur Vorlage. Dieser
+# Ablauf holt einmal im Monat den aktuellen Stand der Vorlage, vergleicht nur
+# die Dateien der Vorlage (Programm, Abläufe, Anleitungen, Beispiele) und bietet
+# Unterschiede als Entwurf «Neue Version der Vorlage» an (Branch
+# vorlage-update). Persönliches (jobhunter.yml, profile/, applications/<slug>/,
+# .jobwatch/seen.json) wird nie angefasst. Logik: jobwatch/vorlage.py.
+#
+# Woher die Vorlage stammt: Variable JOBHUNTER_UPSTREAM (owner/repo), sonst
+# «template_repository» des eigenen Repositorys. Fehlt beides, endet der Lauf
+# still.
+#
+# Das eingebaute Token darf .github/workflows/ nicht ändern. Ohne Secret
+# listet der Entwurf diese Dateien mit einer Anleitung zum Kopieren auf.
+# Optionales Secret:
+#   JOBHUNTER_UPDATE_TOKEN  Fine-grained Token (nur dieses Repository,
+#                           Contents und Workflows: Read and write); dann
+#                           kommen auch die Abläufe automatisch mit.
+on:
+  schedule:
+    - cron: "0 6 3 * *"   # am 3. jedes Monats, 07:00 bzw. 08:00 Schweizer Zeit
+  workflow_dispatch:
+
+permissions:
+  contents: write        # Branch vorlage-update pushen
+  pull-requests: write   # Entwurf eröffnen oder aktualisieren
+
+concurrency:
+  group: vorlage-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HAS_UPDATE_TOKEN: ${{ secrets.JOBHUNTER_UPDATE_TOKEN != '' }}
+    steps:
+      # Volle Historie: der erste Commit zeigt, welche Dateien aus der Vorlage
+      # stammen (nur diese dürfen gelöscht werden). Mit dem Secret pusht git
+      # über das Token, das auch Abläufe ändern darf.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.JOBHUNTER_UPDATE_TOKEN || github.token }}
+
+      - name: Vorlage holen
+        id: upstream
+        env:
+          UPSTREAM: ${{ vars.JOBHUNTER_UPSTREAM }}
+        run: |
+          if [ -z "$UPSTREAM" ]; then
+            UPSTREAM=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.template_repository.full_name // empty' 2>/dev/null || true)
+          fi
+          if [ -z "$UPSTREAM" ] || [ "$UPSTREAM" = "$GITHUB_REPOSITORY" ]; then
+            echo "::notice::Keine Vorlage bekannt (Variable JOBHUNTER_UPSTREAM oder «Use this template»). Nichts zu tun."
+            exit 0
+          fi
+          # Die Vorlage ist öffentlich: ohne das Token dieses Repositorys holen.
+          if ! git -c http.https://github.com/.extraheader= fetch --quiet --depth=1 "https://github.com/$UPSTREAM.git" HEAD; then
+            echo "::warning::Die Vorlage $UPSTREAM konnte nicht geholt werden (privat, umbenannt oder gelöscht?). Variable JOBHUNTER_UPSTREAM prüfen."
+            exit 0
+          fi
+          base=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch 2>/dev/null || echo main)
+          git checkout -q -B vorlage-update "origin/$base"
+          echo "name=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-python-deps
+        if: steps.upstream.outputs.name != ''
+
+      - name: Unterschiede bestimmen
+        id: plan
+        if: steps.upstream.outputs.name != ''
+        env:
+          UPSTREAM: ${{ steps.upstream.outputs.name }}
+          BASE: ${{ steps.upstream.outputs.base }}
+        run: |
+          gh pr list --head vorlage-update --state all --limit 100 --json number,state,body > "$RUNNER_TEMP/prs.json" || echo "[]" > "$RUNNER_TEMP/prs.json"
+          flags=""
+          if [ "$HAS_UPDATE_TOKEN" = true ]; then flags="--include-workflows"; fi
+          python -m jobwatch.vorlage plan --upstream "$UPSTREAM" --ref FETCH_HEAD \
+            --repo "$GITHUB_REPOSITORY" --base "$BASE" --prs "$RUNNER_TEMP/prs.json" $flags \
+            --out "$RUNNER_TEMP/plan.json" --body "$RUNNER_TEMP/pr.md" >> "$GITHUB_OUTPUT"
+
+      - name: Entwurf erstellen oder aktualisieren
+        if: steps.plan.outputs.status == 'new'
+        env:
+          BASE: ${{ steps.upstream.outputs.base }}
+          OPEN_PR: ${{ steps.plan.outputs.open_pr }}
+          COMMIT: ${{ steps.plan.outputs.commit }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python -m jobwatch.vorlage apply "$RUNNER_TEMP/plan.json" --ref FETCH_HEAD
+          git commit -q -m "Neue Version der Vorlage (${COMMIT:0:7})"
+          git push -q -f origin vorlage-update
+          hint="Entwurf konnte nicht erstellt werden. Settings → Actions → General → «Allow GitHub Actions to create and approve pull requests» ankreuzen."
+          if [ -n "$OPEN_PR" ]; then
+            gh pr edit "$OPEN_PR" --title "Neue Version der Vorlage" --body-file "$RUNNER_TEMP/pr.md" >/dev/null
+            echo "::notice::Entwurf #$OPEN_PR aktualisiert."
+          else
+            gh pr create --base "$BASE" --head vorlage-update --title "Neue Version der Vorlage" \
+              --body-file "$RUNNER_TEMP/pr.md" || { echo "::error::$hint"; exit 1; }
+          fi

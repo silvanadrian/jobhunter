@@ -1,0 +1,177 @@
+name: Profil ergänzen
+
+# Formular «Profil ergänzen» (neue Stelle, Kurs, Projekt oder Kenntnis). Den
+# Freitext überträgt der Assistent in ein festes YAML-Format; daraus schreibt
+# jobwatch.ergaenzen die neuen Einträge selbst und nur ergänzend: neue Belege
+# E<n> (fortlaufend, nie wiederverwendet, alle [unbestätigt]), allenfalls eine
+# neue Stelle R<n>, passende Punkte in profile/cv.yaml. Bestehende Einträge
+# bleiben unverändert; der Code prüft das gegen main, sonst Fehler-Kommentar.
+# Danach Entwurf (Pull Request) mit Checkliste nur für die neuen Belege
+# (belege.yml wertet die Häkchen aus).
+#
+#   agent: copilot-cli oder copilot  die Copilot CLI schreibt die Antwortdatei im Runner.
+#                     Scheitert sie: Kommentar mit Erklärung und Auftrag zum Kopieren.
+#   alle anderen (Standard kopieren)  Kommentar mit Auftrag zum Kopieren; die Antwort
+#                     kommt als Kommentar mit `/ergaenzen` in der ersten Zeile zurück.
+#
+# Der Text aus dem Formular ist nicht vertrauenswürdig: Er geht nur über Dateien
+# und Umgebungsvariablen in die Schritte, nie direkt in Befehle.
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read      # bei einem Fehler: Startzeit des Laufs lesen
+  contents: write
+  issues: write
+  pull-requests: write
+  copilot-requests: write   # Copilot CLI mit dem eingebauten GITHUB_TOKEN (agent: copilot-cli)
+
+concurrency:
+  group: ergaenzen-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  ergaenzen:
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      !github.event.issue.pull_request &&
+      ((github.event_name == 'issues' &&
+        (contains(github.event.issue.labels.*.name, 'profil-ergaenzen') ||
+         contains(github.event.issue.body, '### Was ist neu?'))) ||
+       (github.event_name == 'issue_comment' &&
+        github.event.comment.user.login == github.repository_owner &&
+        (startsWith(github.event.comment.body, '/ergaenzen') || startsWith(github.event.comment.body, '/ergänzen')) &&
+        contains(github.event.issue.body, '### Was ist neu?')))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+      BODY: ${{ github.event.issue.body }}
+      COMMENT: ${{ github.event.comment.body }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Formular lesen, Auftrag schreiben
+        id: prep
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          printf '%s' "$BODY" > "$RUNNER_TEMP/issue.md"
+          # Alle je vergebenen IDs (Verlauf aller Zweige ausser dem eigenen Entwurf).
+          git log --exclude="refs/remotes/origin/ergaenzen/issue-$ISSUE" --all --format= -p \
+            -- profile/evidence.md profile/cv.yaml > "$RUNNER_TEMP/ids.txt" || true
+          set +e
+          python -m jobwatch.ergaenzen auftrag "$RUNNER_TEMP/issue.md" \
+            --prompt-out "$RUNNER_TEMP/auftrag.md" --cli ergaenzung.yaml 2> error.txt
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Die Ergänzung konnte nicht vorbereitet werden:"; echo
+              sed 's/^Fehler: //' error.txt; echo
+              echo "So geht es weiter: dieses Issue bearbeiten (oben rechts «…» → Edit), das Feld ergänzen und speichern."; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          if [ "$EVENT" = "issue_comment" ]; then
+            printf '%s' "$COMMENT" > "$RUNNER_TEMP/antwort.md"
+            echo "mode=antwort" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          agent=$(python -m jobwatch.config get agent || echo kopieren)
+          case "$agent" in copilot-cli|copilot) mode=cli ;; *) mode=kopieren ;; esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "model=$(python -m jobwatch.config get copilot_cli.model || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Copilot CLI überträgt die Angaben
+        id: cli
+        if: steps.prep.outputs.mode == 'cli'
+        uses: ./.github/actions/copilot-cli
+        with:
+          token: ${{ secrets.COPILOT_GITHUB_TOKEN || github.token }}
+          prompt-file: ${{ runner.temp }}/auftrag.md
+          write: ergaenzung.yaml
+          model: ${{ steps.prep.outputs.model }}
+
+      - name: Antwort der Copilot CLI bereitlegen
+        id: cliout
+        if: steps.cli.outputs.status == 'ok'
+        run: |
+          if [ -s ergaenzung.yaml ]; then
+            cp ergaenzung.yaml "$RUNNER_TEMP/antwort.md"
+            rm -f ergaenzung.yaml
+            echo "written=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "written=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ergänzung schreiben und prüfen
+        id: apply
+        if: steps.prep.outputs.mode == 'antwort' || steps.cliout.outputs.written == 'true'
+        env:
+          MODE: ${{ steps.prep.outputs.mode }}
+        run: |
+          git checkout -B "ergaenzen/issue-$ISSUE"
+          set +e
+          ids=$(python -m jobwatch.ergaenzen anwenden "$RUNNER_TEMP/antwort.md" "$RUNNER_TEMP/issue.md" \
+            --history "$RUNNER_TEMP/ids.txt" 2> apply.err)
+          code=$?
+          [ "$code" -eq 0 ] && python -m jobwatch.ergaenzen pruefen --base-ref origin/main \
+            --history "$RUNNER_TEMP/ids.txt" > check.txt 2>&1
+          check=$?
+          set -e
+          if [ "$code" -ne 0 ] || [ "$check" -ne 0 ]; then
+            { echo "❌ Ergänzung nicht übernommen:"; echo
+              sed 's/^Fehler: //' apply.err; cat check.txt 2>/dev/null; echo
+              if [ "$MODE" = "antwort" ]; then
+                echo "Bitte die Antwort des Chats vollständig und unverändert einfügen (mit \`/ergaenzen\` in der ersten Zeile)."
+              fi
+              echo "Bestehende Einträge in deinem Profil werden nie geändert oder gelöscht."; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          echo "ids=$ids" >> "$GITHUB_OUTPUT"
+          cat check.txt
+
+      - name: Entwurf eröffnen oder aktualisieren
+        if: steps.apply.outcome == 'success'
+        env:
+          NEW_IDS: ${{ steps.apply.outputs.ids }}
+          SOURCE: ${{ steps.prep.outputs.mode == 'cli' && 'der GitHub Copilot CLI' || 'deiner Chat-KI (Kopieren & Einfügen)' }}
+        run: scripts/ergaenzen-pr.sh
+
+      - name: Auftrag zum Kopieren
+        if: >-
+          steps.prep.outputs.mode == 'kopieren' ||
+          (steps.prep.outputs.mode == 'cli' && (steps.cli.outputs.status != 'ok' || steps.cliout.outputs.written == 'false'))
+        env:
+          MODE: ${{ steps.prep.outputs.mode }}
+          STATUS: ${{ steps.cli.outputs.status }}
+          CLI_CODE: ${{ steps.cli.outputs.exit-code }}
+          CLI_LOG: ${{ steps.cli.outputs.log }}
+        run: |
+          if [ "$MODE" = "cli" ]; then
+            if [ "$STATUS" = "missing-secret" ]; then reason=missing-secret
+            elif [ "$STATUS" = "ok" ]; then reason=no-output
+            else reason=failed
+            fi
+            args=(--reason "$reason" --kind ergaenzen --exit-code "$CLI_CODE")
+            [ -n "$CLI_LOG" ] && args+=(--log "$CLI_LOG")
+            python -m jobwatch.agent fallback "${args[@]}" > fallback.md
+            gh issue comment "$ISSUE" --body-file fallback.md
+          fi
+          python -m jobwatch.ergaenzen kommentar "$RUNNER_TEMP/issue.md" > kopieren.md
+          gh issue comment "$ISSUE" --body-file kopieren.md
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Die Ergänzung des Profils konnte nicht entworfen werden."

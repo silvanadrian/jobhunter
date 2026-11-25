@@ -1,0 +1,51 @@
+name: Fehler melden
+description: >-
+  Schreibt bei einem fehlgeschlagenen Lauf einen verständlichen Kommentar ins
+  betroffene Issue (oder in den Entwurf). Hat der Lauf den Fehler schon selbst
+  mit einem «❌»-Kommentar erklärt, passiert nichts. Ohne Issue-Nummer wird das
+  angeheftete Issue «Status» verwendet, oder ein neues Issue eröffnet.
+inputs:
+  number:
+    description: Issue- oder Pull-Request-Nummer (leer = Status-Issue)
+    required: false
+    default: ""
+  what:
+    description: Was nicht geklappt hat, in einem kurzen Satz
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        NUMBER: ${{ inputs.number }}
+        WHAT: ${{ inputs.what }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        SETTINGS_URL: ${{ github.server_url }}/${{ github.repository }}/settings/actions
+      run: |
+        set -uo pipefail
+        started=$(gh run view "$GITHUB_RUN_ID" --json createdAt --jq .createdAt 2>/dev/null || echo "")
+        if [ -z "$NUMBER" ]; then
+          NUMBER=$(gh issue list --label status --state open --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)
+        fi
+        if [ -n "$NUMBER" ] && [ -n "$started" ]; then
+          already=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments?since=$started" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("❌")))] | length' 2>/dev/null || echo 0)
+          if [ "${already:-0}" != "0" ]; then
+            echo "Fehler wurde schon im Issue erklärt."; exit 0
+          fi
+        fi
+        {
+          echo "❌ **$WHAT**"
+          echo
+          echo "Das liegt selten an dir. Häufige Gründe und was hilft:"
+          echo
+          echo "- **Einstellung fehlt:** [Settings → Actions → General]($SETTINGS_URL), ganz unten das Häkchen **«Allow GitHub Actions to create and approve pull requests»** setzen und **Save**. Danach den Schritt wiederholen."
+          echo "- **Kurze Störung bei GitHub oder einer Stellenbörse:** in ein paar Minuten nochmals versuchen."
+          echo "- **Sonst:** Die Einzelheiten stehen im [Protokoll dieses Ablaufs]($RUN_URL) (für Fortgeschrittene)."
+        } > failure.md
+        if [ -n "$NUMBER" ]; then
+          gh issue comment "$NUMBER" --body-file failure.md || gh pr comment "$NUMBER" --body-file failure.md || true
+        else
+          gh issue create --title "Etwas hat nicht geklappt" --body-file failure.md || true
+        fi

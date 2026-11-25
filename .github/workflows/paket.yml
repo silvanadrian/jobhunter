@@ -1,0 +1,176 @@
+name: Antwort aus dem Chat übernehmen
+
+# Kopieren & Einfügen (agent: kopieren, Standard). Kommentar-Befehle, nur vom
+# Repository-Besitzer:
+#
+#   /paket   im Issue «Vorbereiten: …» einer Stelle, darunter die komplette Antwort
+#            deiner Chat-KI auf den Auftrag. Schreibt applications/<slug>/cv.yaml,
+#            fit.md und prep.md auf Branch prepare/<slug>, ergänzt die Fakten aus
+#            jobhunter.yml, prüft die Belege (Guard), baut die PDFs (Seiten-Check)
+#            und eröffnet bzw. aktualisiert den Pull Request.
+#   /profil  im Issue «Profil», darunter die Antwort auf den Profil-Auftrag. Schreibt
+#            profile/evidence.md (alles [unbestätigt], IDs vom Code) und
+#            profile/cv.yaml und eröffnet bzw. aktualisiert den Pull Request.
+#
+# Erneut `/paket` bzw. `/profil` posten ersetzt den Entwurf im selben Pull Request.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read      # bei einem Fehler: Startzeit des Laufs lesen
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: paket-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event.comment.user.login == github.repository_owner &&
+      (startsWith(github.event.comment.body, '/paket') || startsWith(github.event.comment.body, '/profil'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+      COMMENT: ${{ github.event.comment.body }}
+      BODY: ${{ github.event.issue.body }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Antwort lesen
+        id: read
+        run: |
+          printf '%s' "$COMMENT" > "$RUNNER_TEMP/antwort.md"
+          printf '%s' "$BODY" > "$RUNNER_TEMP/issue.md"
+          if head -n1 "$RUNNER_TEMP/antwort.md" | grep -qi '^[[:space:]]*/profil'; then
+            echo "kind=profil" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "kind=paket" >> "$GITHUB_OUTPUT"
+          set +e
+          slug=$(python -m jobwatch.kopieren slug "$RUNNER_TEMP/antwort.md" "$RUNNER_TEMP/issue.md" 2> slug.err)
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Antwort nicht übernommen:"; echo; sed 's/^Fehler: //' slug.err; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          if ! git fetch origin "prepare/$slug" 2>/dev/null; then
+            gh issue comment "$ISSUE" --body "❌ Zur Stelle \`$slug\` gibt es keinen Branch \`prepare/$slug\`. Zuerst \`/prepare <URL>\` für die Stelle kommentieren."
+            exit 1
+          fi
+          # Immer auf dem aktuellen main aufbauen, damit Profil (Lohn, Kündigungsfrist)
+          # und Vorlagen aktuell sind; aus dem Branch nur den Bewerbungsordner übernehmen.
+          git fetch origin main
+          git checkout -B "prepare/$slug" origin/main
+          git checkout "origin/prepare/$slug" -- "applications/$slug"
+          # application.md (Einreich-Checkliste mit Profilfakten) neu erzeugen lassen;
+          # vor dem Merge enthält sie noch keine Ergebnisse.
+          rm -f "applications/$slug/application.md"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          python - "$slug" <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          from jobwatch.prepare import job_front
+          f = job_front(open(f"applications/{sys.argv[1]}/job.md", encoding="utf-8").read())
+          print(f"title={f['title'] or 'Stelle'}")
+          print(f"company={f['company'] or 'Firma'}")
+          PY
+
+      # --- /paket -----------------------------------------------------------------
+      - name: Antwort prüfen und schreiben
+        id: apply
+        if: steps.read.outputs.kind == 'paket'
+        env:
+          SLUG: ${{ steps.read.outputs.slug }}
+        run: |
+          set +e
+          python -m jobwatch.kopieren apply-paket "$RUNNER_TEMP/antwort.md" "applications/$SLUG" 2> apply.err
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Antwort nicht übernommen:"; echo; sed 's/^Fehler: //' apply.err; echo
+              echo "Bitte die Antwort des Chats vollständig und unverändert einfügen (mit \`/paket\` in der ersten Zeile)."
+              echo "Oder den Chat bitten: «Antworte nur mit dem YAML-Block im verlangten Format.»"; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+      - uses: ./.github/actions/setup-typst
+        if: steps.read.outputs.kind == 'paket'
+      - name: Fakten ergänzen, Guard, PDFs
+        id: finish
+        if: steps.read.outputs.kind == 'paket'
+        env:
+          SLUG: ${{ steps.read.outputs.slug }}
+        run: |
+          set +e
+          python -m jobwatch.prepare finish "applications/$SLUG" 2> finish.err
+          code=$?
+          set -e
+          cat finish.err
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -ne 0 ] && [ "$code" -ne 4 ]; then
+            { echo "❌ Abschluss fehlgeschlagen:"; echo; echo '```text'; cat finish.err; echo '```'; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          scripts/build-cv.sh "applications/$SLUG" > build.txt 2>&1 || echo "BUILD_FAILED" >> build.txt
+          cat build.txt
+      - name: PDFs als Artefakt bereitstellen
+        if: steps.read.outputs.kind == 'paket'
+        uses: actions/upload-artifact@v6
+        with:
+          name: lebenslauf-pdfs
+          path: applications/${{ steps.read.outputs.slug }}/build/*.pdf
+          if-no-files-found: warn
+      - name: Pull Request eröffnen oder aktualisieren
+        if: steps.read.outputs.kind == 'paket'
+        env:
+          SLUG: ${{ steps.read.outputs.slug }}
+          TITLE: ${{ steps.read.outputs.title }}
+          COMPANY: ${{ steps.read.outputs.company }}
+          BRANCH: prepare/${{ steps.read.outputs.slug }}
+          TASK: ${{ github.event.issue.number }}
+          GUARD_CODE: ${{ steps.finish.outputs.code }}
+          SOURCE: deiner Chat-KI (Kopieren & Einfügen)
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/paket-pr.sh
+
+      # --- /profil ----------------------------------------------------------------
+      - name: Profil-Antwort übernehmen
+        if: steps.read.outputs.kind == 'profil'
+        run: |
+          set +e
+          python -m jobwatch.kopieren apply-profil "$RUNNER_TEMP/antwort.md" 2> apply.err
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Antwort nicht übernommen:"; echo; sed 's/^Fehler: //' apply.err; echo
+              echo "Bitte die Antwort des Chats vollständig und unverändert einfügen (mit \`/profil\` in der ersten Zeile)."; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          set +e
+          python -m jobwatch.forms profil-check > check.txt 2>&1
+          echo "CHECK_CODE=$?" >> "$GITHUB_ENV"
+          set -e
+          cat check.txt
+      - name: Pull Request eröffnen oder aktualisieren
+        if: steps.read.outputs.kind == 'profil'
+        env:
+          SOURCE: deiner Chat-KI (Kopieren & Einfügen)
+        run: scripts/profil-pr.sh
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Die Antwort aus dem Chat konnte nicht übernommen werden."

@@ -1,0 +1,18 @@
+name: Stelle vorbereiten
+description: Ein Bewerbungspaket (Lebenslauf-Variante, Brief, Passung, Gesprächsvorbereitung) für eine Stelle entwerfen.
+title: "Stelle: "
+labels: [prepare]
+body:
+  - type: input
+    id: link
+    attributes:
+      label: Link zum Inserat
+      placeholder: "https://..."
+  - type: textarea
+    id: inseratstext
+    attributes:
+      label: Inseratstext
+      description: Nur nötig, wenn der Link nicht gelesen werden kann (z. B. LinkedIn).
+  - type: markdown
+    attributes:
+      value: Es wird nie automatisch eingereicht. Am Ende steht ein Entwurf (Pull Request) zum Prüfen.

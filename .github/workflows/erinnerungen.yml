@@ -1,0 +1,77 @@
+name: Erinnerungen und Wochen-Check-in
+
+# Täglich: Erinnerung 2 Tage vor einer Bewerbungsfrist (deadline) und nach
+# 14 Tagen ohne Antwort ein Vorschlag zum Nachfassen (Werte in jobhunter.yml,
+# reminders:). Montags: ein Wochen-Check-in-Issue, das nach dem Stand jeder
+# offenen Bewerbung fragt. Monatlich, wenn eingeschaltet: Ankündigung, welche
+# alten Bewerbungen aufgeräumt würden (ausgeführt erst nach «/aufraeumen»).
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      checkin:
+        description: "Wochen-Check-in jetzt erstellen"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Fristen und Nachfassen
+        run: |
+          [ -f jobhunter.yml ] || exit 0
+          [ "$(python -m jobwatch.config get reminders.enabled)" = "True" ] || exit 0
+          days=$(python -m jobwatch.config get reminders.follow_up_days)
+          python - "$days" <<'PY' > reminders.tsv
+          import sys
+          from jobwatch.records import load_all, reminders
+          for slug, kind, text in reminders(load_all(), follow_up_days=int(sys.argv[1])):
+              open(f"rem-{slug}-{kind}.md", "w").write(text)
+              print(f"{slug}\t{kind}")
+          PY
+          gh label create erinnerung --color D93F0B 2>/dev/null || true
+          while IFS=$'\t' read -r slug kind; do
+            marker="<!-- erinnerung:$slug:$kind -->"
+            number=$(gh issue list --state open --label application --search "\"application:$slug\" in:body" --json number --jq '.[0].number // empty')
+            # Jede Erinnerung nur einmal.
+            if gh search issues --repo "$GITHUB_REPOSITORY" "\"erinnerung:$slug:$kind\"" --json number --jq '.[0].number' | grep -q .; then continue; fi
+            { echo "$marker"; cat "rem-$slug-$kind.md"; } > msg.md
+            if [ -n "$number" ]; then gh issue comment "$number" --body-file msg.md
+            else gh issue create --title "Erinnerung: $slug" --label erinnerung --body-file msg.md; fi
+          done < reminders.tsv
+
+      - name: Wochen-Check-in (montags)
+        if: github.event.schedule == '30 6 * * *' || inputs.checkin
+        run: |
+          if [ "$(date -u +%u)" != "1" ] && [ "${{ inputs.checkin }}" != "true" ]; then exit 0; fi
+          found=$(gh issue list --state all --label jobwatch --search "created:>=$(date -u -d '7 days ago' +%Y-%m-%d)" --json title --jq '[.[].title | capture(": (?<n>[0-9]+) ").n | tonumber] | add // 0')
+          python -m jobwatch.records checkin --found "$found" > checkin.md
+          gh label create checkin --color FBCA04 2>/dev/null || true
+          gh issue create --title "Wochen-Check-in $(date -u +%Y-%m-%d)" --label checkin \
+            --assignee "${{ github.repository_owner }}" --body-file checkin.md
+
+      - name: Aufbewahrung ankündigen (monatlich, falls eingeschaltet)
+        run: |
+          [ -f jobhunter.yml ] || exit 0
+          [ "$(date -u +%d)" = "01" ] || exit 0
+          [ "$(python -m jobwatch.config get retention.enabled)" = "True" ] || exit 0
+          months=$(python -m jobwatch.config get retention.months)
+          mode=$(python -m jobwatch.config get retention.mode)
+          python -m jobwatch.records retention --months "$months" > due.md
+          [ -s due.md ] || exit 0
+          { echo "Diese abgeschlossenen Bewerbungen sind älter als $months Monate und würden aufgeräumt ($mode):"
+            echo; cat due.md; echo
+            echo "Kommentiere \`/aufraeumen\`, um das auszuführen. Ohne Kommentar passiert nichts."; } > body.md
+          gh label create aufbewahrung --color EDEDED 2>/dev/null || true
+          gh issue create --title "Aufbewahrung: $(wc -l < due.md) alte Bewerbung(en)" --label aufbewahrung --body-file body.md

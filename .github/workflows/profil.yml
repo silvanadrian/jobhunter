@@ -1,0 +1,141 @@
+name: Profil aus Lebenslauf
+
+# Wertet das Issue-Formular «Profil» aus: liest den Lebenslauf aus dem Feld
+# «Lebenslauf als Text» (Anhänge in Issues privater Repositories kann kein
+# Workflow herunterladen, auch nicht mit Token; darum nur Text),
+# übernimmt ein Foto aus profile/ und übernimmt Kündigungsfrist,
+# Lohnvorstellung, Pensum und Arbeitsbewilligung nach jobhunter.yml (nur aus dem
+# Formular, nie aus dem Lebenslauf). Den Entwurf von profile/evidence.md und
+# profile/cv.yaml (jeder Eintrag «[unbestätigt]», vom Code erzwungen) schreibt:
+#
+#   agent: copilot-cli oder copilot  die GitHub Copilot CLI im Runner, dann PR.
+#                     Scheitert sie: Kommentar mit Erklärung und Auftrag zum Kopieren.
+#   alle anderen (Standard kopieren)  ein Kommentar mit einem Auftrag zum Kopieren
+#                     in claude.ai, ChatGPT o. ä.; die Antwort kommt mit `/profil`
+#                     zurück (paket.yml), daraus entsteht der PR.
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  actions: read      # bei einem Fehler: Startzeit des Laufs lesen
+  contents: write
+  issues: write
+  pull-requests: write
+  copilot-requests: write   # Copilot CLI mit dem eingebauten GITHUB_TOKEN (agent: copilot-cli)
+
+jobs:
+  profile:
+    if: >-
+      (contains(github.event.issue.labels.*.name, 'profil') ||
+       contains(github.event.issue.body, '### Kündigungsfrist (Monate)')) &&
+      github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+      BODY: ${{ github.event.issue.body }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+      - name: Formular und Foto aus profile/ lesen
+        run: |
+          printf '%s' "$BODY" > form.md
+          # Foto: ein Bild in profile/ wird zu profile/foto.jpg bzw. .png.
+          if ! ls profile/foto.jpg profile/foto.jpeg profile/foto.png >/dev/null 2>&1; then
+            img=$(find profile -maxdepth 1 \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | head -1)
+            if [ -n "$img" ]; then
+              case "$img" in *.png|*.PNG) git mv "$img" profile/foto.png ;; *) git mv "$img" profile/foto.jpg ;; esac
+            fi
+          fi
+
+      - name: Profilangaben übernehmen, Auftrag schreiben
+        id: facts
+        run: |
+          set +e
+          python -m jobwatch.forms profil form.md --prompt-out "$RUNNER_TEMP/profil-auftrag.md" > result.txt 2> error.txt
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Das Profil konnte nicht entworfen werden:"; echo; echo '```text'; cat error.txt; echo '```'
+              echo; echo "So geht es weiter: dieses Issue bearbeiten (oben rechts «…» → Edit), den Text deines Lebenslaufs ins Feld «Lebenslauf als Text» einfügen und speichern. Der Workflow läuft dann neu."
+              if grep -q 'user-attachments' form.md; then echo; echo "Hinweis: Dateien, die man direkt ins Issue zieht, kann GitHub bei privaten Repositories nicht an Workflows weitergeben. Bitte den Text des Lebenslaufs ins Feld «Lebenslauf als Text» einfügen."; fi; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          cat result.txt
+          agent=$(python -m jobwatch.config get agent || echo kopieren)
+          case "$agent" in copilot-cli|copilot) mode=cli ;; *) mode=kopieren ;; esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "model=$(python -m jobwatch.config get copilot_cli.model || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Copilot CLI entwirft das Profil
+        id: cli
+        if: steps.facts.outputs.mode == 'cli'
+        uses: ./.github/actions/copilot-cli
+        with:
+          token: ${{ secrets.COPILOT_GITHUB_TOKEN || github.token }}
+          prompt-file: ${{ runner.temp }}/profil-auftrag.md
+          write: profile/evidence.md profile/cv.yaml
+          model: ${{ steps.facts.outputs.model }}
+
+      - name: Entwurf prüfen
+        id: check
+        if: steps.cli.outputs.status == 'ok'
+        run: |
+          if git diff --quiet -- profile/evidence.md; then
+            echo "written=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "written=true" >> "$GITHUB_OUTPUT"
+          set +e
+          python -m jobwatch.forms profil-check > check.txt 2>&1
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat check.txt
+
+      - name: Pull Request eröffnen
+        if: steps.check.outputs.written == 'true'
+        env:
+          CHECK_CODE: ${{ steps.check.outputs.code }}
+          SOURCE: der GitHub Copilot CLI
+        run: scripts/profil-pr.sh
+
+      - name: Auftrag zum Kopieren
+        if: >-
+          steps.facts.outputs.mode == 'kopieren' ||
+          (steps.facts.outputs.mode == 'cli' && (steps.cli.outputs.status != 'ok' || steps.check.outputs.written == 'false'))
+        env:
+          MODE: ${{ steps.facts.outputs.mode }}
+          STATUS: ${{ steps.cli.outputs.status }}
+          CLI_CODE: ${{ steps.cli.outputs.exit-code }}
+          CLI_LOG: ${{ steps.cli.outputs.log }}
+        run: |
+          # Profilangaben (und ein hochgeladenes Foto) sichern: /profil läuft später separat.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -- profile/evidence.md profile/cv.yaml
+          git add jobhunter.yml
+          git add -A profile/foto.* 2>/dev/null || true; git add -u profile/ 2>/dev/null || true
+          git diff --staged --quiet || { git commit -m "Profilangaben aus dem Formular übernommen" && git push; }
+          if [ "$MODE" = "cli" ]; then
+            if [ "$STATUS" = "missing-secret" ]; then reason=missing-secret
+            elif [ "$STATUS" = "ok" ]; then reason=no-output
+            else reason=failed
+            fi
+            args=(--reason "$reason" --kind profil --exit-code "$CLI_CODE")
+            [ -n "$CLI_LOG" ] && args+=(--log "$CLI_LOG")
+            python -m jobwatch.agent fallback "${args[@]}" > fallback.md
+            gh issue comment "$ISSUE" --body-file fallback.md
+          fi
+          python -m jobwatch.kopieren comment-profil cv.txt > kopieren.md
+          { echo "Kündigungsfrist, Lohnvorstellung, Pensum und Arbeitsbewilligung sind in \`jobhunter.yml\` gespeichert."
+            echo; cat kopieren.md; } > msg.md
+          gh issue comment "$ISSUE" --body-file msg.md
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Das Profil konnte nicht verarbeitet werden."

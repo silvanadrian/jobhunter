@@ -1,0 +1,39 @@
+# Gebaute PDFs (entstehen im Build, liegen als Artefakt/Release bei GitHub)
+build/
+applications/*/build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor / System
+.DS_Store
+*.swp
+*~
+
+# Geheimnisse
+.env
+*.key
+
+# Sensible Dokumente: nie ins Repository, auch nicht ins private.
+# (Das Foto für den Lebenslauf ist absichtlich NICHT ausgeschlossen:
+#  profile/foto.jpg gehört in dein privates Repository.)
+profile/dokumente/*
+!profile/dokumente/README.md
+*[Zz]eugnis*
+*[Aa]usweis*
+*[Rr]eisepass*
+*[Pp]assport*
+*[Ii]dentit[aä]tskarte*
+*[Aa][Hh][Vv]-*
+*[Aa][Hh][Vv]_*
+*[Ii][Bb][Aa][Nn]*
+*[Bb]ankverbindung*
+*[Ss]teuererkl[aä]rung*
+*[Ll]ohnausweis*
+
+# Zwischendateien der Workflows (Lebenslauf-Text, Aufträge)
+cv.txt
+*-auftrag.md
+auftrag.md

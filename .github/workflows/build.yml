@@ -1,0 +1,96 @@
+name: Lebenslauf bauen und prüfen
+
+# Baut bei jedem Push den Basis-Lebenslauf und alle Bewerbungsvarianten mit
+# Typst, prüft die Seitenzahl (Lebenslauf höchstens 2 Seiten, Brief 1 Seite)
+# und die Belege (Ehrlichkeits-Prüfung, GUARDRAILS.md) und stellt die PDFs als
+# Artefakt bereit. Keine Secrets nötig.
+#
+# Absichtlich kein `pull_request:`-Auslöser: Entwürfe, die die Workflows selbst
+# eröffnen, müssten sonst mit «Approve workflows to run» freigegeben werden.
+# Die Workflows prüfen ihre Entwürfe schon selbst. Änderst du danach etwas im
+# Entwurf (Push auf prepare/… oder profil/…), läuft dieser Workflow und meldet
+# das Ergebnis als Kommentar im Entwurf.
+on:
+  push:
+    paths:
+      - "cv/**"
+      - "profile/**"
+      - "applications/**"
+      - "fonts/**"
+      - "GUARDRAILS.md"
+      - "jobwatch/**"
+      - "tests/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+      - uses: ./.github/actions/setup-typst
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Belege prüfen (Ehrlichkeits-Prüfung)
+        id: guard
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          # Ordner mit «_» am Anfang sind Vorlagen/Beispiele und werden nicht geprüft.
+          dirs=$(for d in applications/[!_]*/; do if [ -f "$d/cv.yaml" ]; then echo "${d%/}"; fi; done)
+          python -m jobwatch.guard | tee guard.txt
+          if [ -n "$dirs" ]; then python -m jobwatch.guard $dirs | tee -a guard.txt; fi
+
+      - name: PDFs bauen und Seiten zählen
+        id: pdfs
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make all 2>&1 | tee build.txt
+
+      - name: PDFs bereitstellen
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: lebenslauf-pdfs
+          path: |
+            build/*.pdf
+            applications/*/build/*.pdf
+          if-no-files-found: warn
+
+      - name: Ergebnis im Entwurf melden
+        if: ${{ !cancelled() && github.ref_name != 'main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUARD: ${{ steps.guard.outcome }}
+          PDFS: ${{ steps.pdfs.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          number=$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number // empty')
+          [ -z "$number" ] && exit 0
+          {
+            if [ "$GUARD" = success ] && [ "$PDFS" = success ]; then
+              echo "✅ **Nach deiner Änderung geprüft: alles in Ordnung.** Du kannst den Entwurf übernehmen:"
+              echo "unten auf den grünen Knopf **«Merge pull request»** klicken, dann **«Confirm merge»**."
+            else
+              echo "❌ **Nach deiner Änderung geprüft: noch nicht in Ordnung.** Bitte zuerst beheben, dann übernehmen."
+            fi
+            echo
+            echo "<details><summary>Ehrlichkeits-Prüfung und Seiten-Check</summary>"
+            echo; echo '```text'; cat guard.txt 2>/dev/null; grep -E 'Seite|FEHLER' build.txt 2>/dev/null; echo '```'
+            echo "</details>"
+            echo
+            echo "PDFs: [Artefakt «lebenslauf-pdfs»]($RUN_URL#artifacts)"
+          } > result.md
+          gh pr comment "$number" --body-file result.md
+
+      - name: Lauf als fehlgeschlagen markieren
+        if: ${{ steps.guard.outcome == 'failure' || steps.pdfs.outcome == 'failure' }}
+        run: exit 1

@@ -1,0 +1,53 @@
+# Bewerbungsvariante (Beispiel, frei erfunden). Überschreibt nur, was hier
+# steht; alles andere kommt aus profile/cv.yaml. Jede Aussage nennt Belege.
+
+lang: de
+position: Software Engineer mit Schwerpunkt Testautomatisierung   # Positionierung, kein gehaltener Titel
+
+summary:
+  text: >-
+    Software Engineer mit acht Jahren Erfahrung in der Webentwicklung. Bei
+    Contoso verantwortlich für die technische Weiterentwicklung eines
+    Kundenportals und für die Einführung von End-to-End-Tests in der CI.
+    Begleitet jüngere Kolleginnen in Code-Reviews und im Pair-Programming.
+  evidence: [E1, E2, E3]
+
+experience:
+  - role: R1
+    bullets:
+      - B1
+      - B2
+      - text: Einführung von GitHub Actions als Build-Plattform anstelle von Jenkins
+        evidence: [E4]
+      - B3
+  - role: R2
+    bullets: [B6, B5]
+  - role: R3
+
+letter:
+  recipient: Fabrikam Cloud AG
+  recipient_address: [Beispielweg 2, 8000 Zürich]
+  title: Bewerbung als Tech Lead Plattform
+  opening: Sehr geehrte Damen und Herren
+  paragraphs:
+    - text: >-
+        Ihre Ausschreibung für die Stelle als Tech Lead Plattform hat mich
+        angesprochen, weil sie Testautomatisierung und die Begleitung eines
+        kleinen Teams verbindet.
+      evidence: []
+    - text: >-
+        Bei Contoso verantworte ich die technische Weiterentwicklung unseres
+        Kundenportals mit React und TypeScript und habe Playwright-Tests in die
+        CI-Pipeline eingeführt. Zwei Junior-Entwicklerinnen begleite ich in
+        Code-Reviews und im Pair-Programming.
+      evidence: [E1, E2, E3]
+    - text: >-
+        Offen gesagt: Disziplinarische Führung habe ich bisher nicht
+        übernommen, und mit Kubernetes habe ich keine Praxiserfahrung. Beides
+        würde ich gerne bei Ihnen aufbauen.
+      evidence: []
+    - text: >-
+        Über ein Gespräch freue ich mich. Meine Kündigungsfrist beträgt drei
+        Monate auf Monatsende.
+      evidence: []
+  closing: Freundliche Grüsse

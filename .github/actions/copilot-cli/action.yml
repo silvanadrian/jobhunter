@@ -1,0 +1,134 @@
+name: Copilot CLI ausführen
+description: >-
+  Installiert die GitHub Copilot CLI (feste Version) und führt einen Auftrag im
+  Programmiermodus aus (copilot -p). Die CLI darf nur Dateien lesen und die
+  ausdrücklich erlaubten Dateien schreiben; Shell, Web und die eingebauten
+  MCP-Server sind gesperrt. Fehlt das Token, wird nichts installiert und
+  status=missing-secret gemeldet, damit der Workflow einen Kommentar schreibt.
+  Der aufrufende Workflow braucht `permissions: copilot-requests: write`.
+
+# Quellen (GitHub Docs, geprüft im November 2026):
+#   Installation: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
+#   Programmiermodus: https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-copilot-cli/run-cli-programmatically
+#   Optionen: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference
+#   In Actions: https://docs.github.com/copilot/concepts/agents/copilot-cli/copilot-cli-in-github-actions
+#     und https://github.blog/changelog/2026-07-02-copilot-cli-no-longer-needs-a-personal-access-token-in-github-actions/
+#     Seit 02.07.2026 genügt das eingebaute GITHUB_TOKEN mit der Workflow-Berechtigung
+#     `copilot-requests: write` und einer aktuellen CLI. In einem persönlichen Repository
+#     zählt die Nutzung auf den Copilot-Plan des Besitzers. Die genaue Mindestversion
+#     steht in keinem Release-Hinweis (TODO); gepinnt ist 1.0.112 vom 13.11.2026.
+#   Notlösung: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli
+#     Fine-grained PAT des persönlichen Kontos mit «Copilot Requests» als Secret
+#     COPILOT_GITHUB_TOKEN; klassische Tokens (ghp_) werden nicht unterstützt.
+
+inputs:
+  token:
+    description: >-
+      Token für Copilot: secrets.COPILOT_GITHUB_TOKEN || github.token (das eingebaute
+      Token genügt mit `copilot-requests: write`)
+    required: false
+    default: ""
+  prompt-file:
+    description: Datei mit dem Auftrag (Markdown)
+    required: true
+  write:
+    description: >-
+      Dateien, die die CLI schreiben darf, relativ zum Repository und durch
+      Leerzeichen getrennt (Glob-Muster erlaubt, z. B. applications/acme/*)
+    required: true
+  model:
+    description: >-
+      optionales Modell (--model); leer = automatische Auswahl der CLI. Copilot Free
+      bietet nur die automatische Auswahl, darum standardmässig leer.
+    required: false
+    default: ""
+  version:
+    description: Version des npm-Pakets @github/copilot
+    required: false
+    default: "1.0.112"
+
+outputs:
+  status:
+    description: ok | failed | missing-secret
+    value: ${{ steps.run.outputs.status || steps.token.outputs.status }}
+  exit-code:
+    description: Exit-Code der CLI
+    value: ${{ steps.run.outputs.exit-code }}
+  log:
+    description: Pfad zur Ausgabe der CLI
+    value: ${{ steps.run.outputs.log }}
+
+runs:
+  using: composite
+  steps:
+    - name: Token vorhanden?
+      id: token
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+      run: |
+        if [ -z "$TOKEN" ]; then
+          echo "::warning::Kein Token übergeben; die Copilot CLI wird nicht gestartet."
+          echo "status=missing-secret" >> "$GITHUB_OUTPUT"
+        else
+          echo "status=ready" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Node.js 22 einrichten
+      if: steps.token.outputs.status == 'ready'
+      uses: actions/setup-node@v5
+      with:
+        node-version: "22"
+
+    - name: Copilot CLI installieren
+      if: steps.token.outputs.status == 'ready'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        npm install -g --no-fund --no-audit "@github/copilot@$VERSION"
+        COPILOT_AUTO_UPDATE=false copilot --version
+
+    - name: Auftrag ausführen
+      id: run
+      if: steps.token.outputs.status == 'ready'
+      shell: bash
+      env:
+        # Die CLI sucht das Token in dieser Reihenfolge: COPILOT_GITHUB_TOKEN,
+        # GH_TOKEN, GITHUB_TOKEN. Übergeben wird genau eines (Secret oder das
+        # eingebaute Token); die anderen beiden werden geleert. Ohne Shell- und
+        # Web-Werkzeuge kann die CLI das Token nicht weiterverwenden.
+        COPILOT_GITHUB_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ""
+        GITHUB_TOKEN: ""
+        COPILOT_AUTO_UPDATE: "false"
+        PROMPT_FILE: ${{ inputs.prompt-file }}
+        WRITE: ${{ inputs.write }}
+        MODEL: ${{ inputs.model }}
+      run: |
+        allow="read"
+        for path in $WRITE; do
+          allow="$allow, write($GITHUB_WORKSPACE/$path)"
+        done
+        args=(-p "$(cat "$PROMPT_FILE")" -s --no-ask-user --no-auto-update
+              --allow-tool="$allow"
+              --deny-tool='shell, url, memory'
+              --disable-builtin-mcps
+              --usage-output-file "$RUNNER_TEMP/copilot-usage.json")
+        [ -n "$MODEL" ] && args+=(--model "$MODEL")
+        log="$RUNNER_TEMP/copilot.log"
+        echo "Erlaubt: $allow"
+        set +e
+        copilot "${args[@]}" > "$log" 2>&1
+        code=$?
+        set -e
+        cat "$log"
+        [ -f "$RUNNER_TEMP/copilot-usage.json" ] && cat "$RUNNER_TEMP/copilot-usage.json"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "log=$log" >> "$GITHUB_OUTPUT"
+        if [ "$code" -eq 0 ]; then
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::Copilot CLI endete mit Exit-Code $code"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+        fi

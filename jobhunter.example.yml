@@ -1,0 +1,172 @@
+# jobhunter.example.yml — Beispielkonfiguration mit jeder Einstellung.
+#
+# Am einfachsten: Issue-Formular «Einrichtung» ausfüllen (siehe README), dann
+# wird jobhunter.yml automatisch erstellt. Oder lokal: python -m jobwatch init
+# Von Hand: diese Datei nach jobhunter.yml kopieren und anpassen.
+# Prüfen: python -m jobwatch check
+#
+# Wörter sind normale Wörter, Gross/klein egal. "Zürich" findet auch "Zurich".
+# Wörter mit höchstens drei Buchstaben ("ai", "cto") zählen nur als ganzes Wort.
+# Wer reguläre Ausdrücke braucht, schreibt "re:" davor, z. B. "re:\bml\b".
+
+# ════════════════════════════════════════════════════════════════════════════
+#  1. Wonach du suchst
+# ════════════════════════════════════════════════════════════════════════════
+search:
+  # Ein Stellentitel muss mindestens eines dieser Wörter enthalten.
+  keywords: [engineer, developer, entwickler, architect, software]
+  # ...und eines dieser Wörter für die Stufe. [] = jede Stufe.
+  # Mit `python -m jobwatch --all` wird diese Liste für einen Lauf ignoriert.
+  seniority: [senior, lead, staff, principal, head, leiter]
+  # Titel mit diesen Wörtern nie anzeigen (zusätzlich zu einer eingebauten
+  # Liste typischer Fehltreffer wie Sales, Hardware, Bau; siehe advanced).
+  avoid: [praktikum, werkstudent]
+  # Voll-Remote-Stellen zählen, wenn sie im Land eines deiner Orte liegen
+  # oder nur «Remote» angeben. true oder false.
+  remote_ok: true
+  # Befristete und Temporärstellen anzeigen? Standard: false (ausblenden).
+  contract_ok: false
+
+# ════════════════════════════════════════════════════════════════════════════
+#  2. Wo
+# ════════════════════════════════════════════════════════════════════════════
+locations:
+  - name: zuerich                    # kurzer Name ohne Leerzeichen
+    label: Region Zürich             # Überschrift im täglichen Issue
+    # Orte, an denen du arbeiten kannst.
+    places: [Zürich, Winterthur, Zug, Baden]
+    # Ein Inserat, das nur das Land nennt («Schweiz»), zählt auch...
+    country: [Schweiz, Switzerland]
+    # ...ausser es nennt einen dieser Orte.
+    avoid_places: [Genf, Geneva, Lausanne, Lugano]
+    # Optional: Stellen mit angegebenem Lohn unter dieser Grenze (pro Jahr)
+    # ausblenden. Stellen ohne Lohnangabe bleiben immer sichtbar.
+    # salary_floor: 110000
+    # ── Jobbörse jobs.ch: die wichtigste Quelle in der Schweiz ──────────────
+    # Durchsucht jobs.ch täglich mit deinen Stichwörtern an diesen Orten.
+    # Gratis, ohne Konto, ohne Schlüssel. Das Formular «Einrichtung» schaltet
+    # das für die Schweiz automatisch ein. Damit findest du die meisten
+    # Stellen, auch ohne eine einzige Firma unter «companies» einzutragen.
+    # (Läuft im täglichen Lauf; lokal mit `python -m jobwatch --wide`.)
+    boards:
+      - board: jobs.ch
+        where: [Zürich, Zug]
+
+  # Weitere Orte einfach darunter anhängen, z. B.:
+  # - name: remote_eu
+  #   label: Remote Europa
+  #   places: ["re:remote.*(europe|eu|emea)"]
+
+# ════════════════════════════════════════════════════════════════════════════
+#  3. Firmen, die du beobachtest
+# ════════════════════════════════════════════════════════════════════════════
+# Optional, zusätzlich zu jobs.ch: Firmen, deren Karriereseite du direkt
+# beobachten willst. Das lohnt sich für Wunschfirmen, die nicht (oder nicht
+# alle Stellen) auf jobs.ch ausschreiben, und für Stellen ausserhalb der Schweiz.
+# Link zur Karriereseite oder zu einer einzelnen Stelle einfügen. Unterstützt:
+# Greenhouse, Lever, Ashby, Personio, Recruitee, SmartRecruiters, Workable,
+# BambooHR, Breezy, Teamtailor, Workday.
+# Hinzufügen per Befehl: python -m jobwatch add-company <url>
+# Kurzform "system:slug" geht auch, ebenso {ats: workday, slug: "firma/wd3/Site"}.
+# Leer lassen ist völlig in Ordnung: companies: []
+companies: []
+  # Beispiele (Platzhalter, durch echte Karriereseiten ersetzen):
+  # - https://boards.greenhouse.io/beispiel
+  # - https://jobs.lever.co/beispiel
+  # - https://beispiel.jobs.personio.de
+
+# ════════════════════════════════════════════════════════════════════════════
+#  4. Eigene Buchhaltung (bleibt im privaten Repository)
+# ════════════════════════════════════════════════════════════════════════════
+# Firmen, die für dich nicht in Frage kommen: werden ausgeblendet.
+ruled_out:
+  # beispielfirma: "kein Interesse"
+# Firmen mit laufender Bewerbung: werden angezeigt, aber markiert.
+pending:
+  # andere-beispielfirma: "beworben am 2026-01-15"
+# Einzelne Inserate, auf die du dich beworben hast: werden ausgeblendet.
+applied:
+  # "https://example.com/jobs/123": "beworben am 2026-01-15"
+# Firmen ohne lesbaren Feed, die du selbst im Auge behalten willst.
+manual_check:
+  # beispiel-ag: "https://example.com/karriere"
+
+# ════════════════════════════════════════════════════════════════════════════
+#  5. Fakten, die kein Assistent je raten darf
+# ════════════════════════════════════════════════════════════════════════════
+profile:
+  # Kündigungsfrist. until: month_end (auf Monatsende) oder any_day.
+  # Daraus wird der früheste Stellenantritt berechnet — nie aus dem Inserat.
+  notice: {months: 3, until: month_end}
+  salary_expectation: ""       # Lohnvorstellung, z. B. "CHF 120'000–130'000"
+  workload: "100%"             # Pensum, z. B. "80–100%"
+  onsite_days: ""              # z. B. "3 Tage pro Woche"
+  work_permit: ""              # z. B. "Schweizer Staatsbürgerschaft" — nur wo relevant
+  non_compete: ""              # Konkurrenzverbot, falls vorhanden
+  cv_style: klassisch          # Stil des Lebenslaufs: klassisch, schlicht oder kompakt (docs/stile/)
+  evidence: profile/evidence.md
+  target: profile/target.md
+  cv: profile/cv.yaml
+
+# ════════════════════════════════════════════════════════════════════════════
+#  6. Assistent für Bewerbungspakete
+# ════════════════════════════════════════════════════════════════════════════
+# kopieren    = Kopieren & Einfügen (Standard, gratis, kein Secret): Nach /prepare
+#               steht im Issue ein Auftrag für deinen Chat (claude.ai, ChatGPT o. ä.);
+#               die Antwort fügst du mit /paket in der ersten Zeile wieder ein. Für
+#               das Profil gleich mit /profil. Zweimal kopieren pro Paket.
+# copilot-cli = GitHub Copilot CLI schreibt direkt im Actions-Runner. Gratis mit
+#               Copilot Free (200 Chat-Anfragen pro Monat; ein Paket braucht etwa
+#               eine, mit Copilot Free getestet). Normalerweise genügt
+#               das eingebaute GITHUB_TOKEN; Secret COPILOT_GITHUB_TOKEN nur als
+#               Notlösung (docs/FORTGESCHRITTEN.md). Schreibt auch den Profil-Entwurf.
+# copilot     = Copilot-Coding-Agent bearbeitet ein Unter-Issue (ab Copilot Pro,
+#               Secret COPILOT_ASSIGN_TOKEN)
+# claude      = Claude Code Action (Secret ANTHROPIC_API_KEY, Abrechnung nach Nutzung)
+# none        = «lokal»: nur job.md holen; Anpassen machst du auf deinem Rechner
+# (models, der frühere Gratisweg über GitHub Models, wurde am 30.07.2026 von
+# GitHub eingestellt und gibt jetzt eine Fehlermeldung.)
+agent: kopieren
+
+copilot_cli:
+  # Nur für agent: copilot-cli. Optional ein bestimmtes Modell (copilot --model).
+  # Leer = automatische Auswahl; Copilot Free bietet nur diese. Welche Modelle
+  # dein Plan anbietet, zeigt `copilot` lokal mit /model.
+  model: ""
+
+# ════════════════════════════════════════════════════════════════════════════
+#  7. Erinnerungen, Board, Aufbewahrung, Dokumente
+# ════════════════════════════════════════════════════════════════════════════
+reminders:
+  enabled: true
+  deadline_days: 2             # Erinnerung so viele Tage vor der Bewerbungsfrist
+  follow_up_days: 14           # Nachfass-Vorschlag nach so vielen Tagen ohne Antwort
+
+board:                         # GitHub-Projects-Board, braucht Secret PROJECT_TOKEN
+  enabled: false
+  owner: ""                    # dein GitHub-Benutzername
+  number: 0                    # Nummer des Boards (steht in dessen URL)
+  status_field: Status
+
+retention:                     # alte, abgeschlossene Bewerbungen aufräumen
+  enabled: false               # erst einschalten, wenn du es willst
+  months: 12
+  mode: archive                # archive (nach archive/ verschieben) oder delete
+
+documents:
+  # Arbeitszeugnisse/Diplome im (privaten!) Repository speichern, um sie an
+  # Bewerbungen anzuhängen? Standard false: sie bleiben nur bei dir.
+  store_certificates: false
+
+# ════════════════════════════════════════════════════════════════════════════
+#  8. Für Fortgeschrittene
+# ════════════════════════════════════════════════════════════════════════════
+advanced:
+  state_file: .jobwatch/seen.json   # welche Stellen schon gemeldet wurden
+  source_backlog: 40                # neue Quelle mit mehr Stellen: still erfassen
+  noise_filter: true                # eingebaute Fehltreffer-Liste verwenden
+  # default_locations: [zuerich]    # nur diese Orte im täglichen Lauf
+  queries:                          # Suchbegriffe für Jobbörsen
+    lead: [tech lead, engineering manager, software architect, lead developer,
+           teamleiter software, head of engineering]
+    broad: [software engineer, softwareentwickler, fullstack developer]

@@ -1,0 +1,357 @@
+name: Bewerbung vorbereiten
+
+# Auslöser:
+#   * Kommentar `/prepare <URL>` in einem Issue (z. B. im täglichen Stellen-Issue)
+#   * Label `prepare` auf einem Issue aus dem Formular «Stelle vorbereiten»
+#
+# Ablauf (alles ausser dem Schreiben der Texte ist deterministisch):
+#   1. Inserat holen -> applications/<firma>-<stelle>/job.md (python -m jobwatch fetch-ad)
+#   2. Hinweis, falls du dich bei dieser Firma schon beworben hast
+#   3. Branch prepare/<slug> und Unter-Issue «Vorbereiten: <Stelle> bei <Firma>»
+#   4. Assistent gemäss jobhunter.yml (agent:):
+#        kopieren    (Standard) Kommentar mit einem Auftrag zum Kopieren in claude.ai,
+#                    ChatGPT o. ä.; die Antwort kommt mit `/paket` zurück (paket.yml)
+#        copilot-cli GitHub Copilot CLI schreibt im Runner cv.yaml (Variante + Brief),
+#                    fit.md und prep.md. Danach deterministisch: Fakten aus jobhunter.yml,
+#                    Guard, PDFs mit Seiten-Check, PR. Gratis mit Copilot Free (begrenzt);
+#                    eingebautes GITHUB_TOKEN mit `copilot-requests: write`, Secret
+#                    COPILOT_GITHUB_TOKEN nur als Notlösung. Scheitert die CLI: Kommentar
+#                    mit Erklärung und zusätzlich der Auftrag zum Kopieren.
+#        copilot     Unter-Issue wird dem Copilot-Coding-Agenten zugewiesen
+#                    (ab Copilot Pro + Secret COPILOT_ASSIGN_TOKEN, siehe docs/FORTGESCHRITTEN.md)
+#        claude      Claude Code Action (Secret ANTHROPIC_API_KEY, kostenpflichtig)
+#        none        «lokal»: nur job.md; Anleitung für eine lokale Sitzung als Kommentar
+#   5. Du prüfst den PR, mergst ihn und reichst selbst ein. Nie automatisch.
+#
+# Einmalig nötig: Settings -> Actions -> General -> «Allow GitHub Actions to
+# create and approve pull requests» einschalten (sonst kann kein PR entstehen).
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  copilot-requests: write   # Copilot CLI mit dem eingebauten GITHUB_TOKEN (agent: copilot-cli)
+  actions: write
+  id-token: write   # nur für die optionale Claude-Action
+
+concurrency:
+  group: prepare-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/prepare') &&
+       github.event.comment.user.login == github.repository_owner) ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'prepare') ||
+      (github.event_name == 'issues' && github.event.action == 'opened' &&
+       !contains(github.event.issue.labels.*.name, 'prepare') &&
+       contains(github.event.issue.body, '### Link zum Inserat') &&
+       github.event.issue.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+
+      - name: Inserat bestimmen
+        id: input
+        env:
+          COMMENT: ${{ github.event.comment.body }}
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          python - <<'PY'
+          import os, re
+          from jobwatch.forms import parse_form, field
+          comment, body = os.environ.get("COMMENT") or "", os.environ.get("BODY") or ""
+          url = ""
+          if comment.startswith("/prepare"):
+              hit = re.search(r"https?://\S+", comment)
+              url = hit.group(0) if hit else ""
+              paste = comment.split("\n", 1)[1] if "\n" in comment else ""
+          else:
+              fields = parse_form(body)
+              url = field(fields, "link")
+              if not url:
+                  hit = re.search(r"https?://\S+", body)
+                  url = hit.group(0) if hit else ""
+              paste = field(fields, "inseratstext", "text")
+          open("paste.txt", "w").write(paste)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"url={url.strip('<>()')}\n")
+          PY
+
+      - name: Inserat holen
+        id: fetch
+        env:
+          URL: ${{ steps.input.outputs.url }}
+        run: |
+          args=()
+          [ -n "$URL" ] && args+=("$URL")
+          [ -s paste.txt ] && args+=(--paste paste.txt)
+          if [ ${#args[@]} -eq 0 ]; then
+            gh issue comment "$ISSUE" --body "Ich finde keinen Link. Bitte so kommentieren: \`/prepare https://...\` — oder den Inseratstext unter \`/prepare\` in den Kommentar einfügen."
+            exit 1
+          fi
+          set +e
+          slug=$(python -m jobwatch fetch-ad "${args[@]}" --print-slug 2> fetch.err)
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "Das Inserat liess sich nicht automatisch auslesen:"; echo; echo '```text'; cat fetch.err; echo '```'; echo
+              echo "Bitte den vollständigen Inseratstext als Kommentar einfügen, so:"; echo
+              echo '```text'; echo "/prepare $URL"; echo "<hier den Inseratstext einfügen>"; echo '```'; } > msg.md
+            gh issue comment "$ISSUE" --body-file msg.md
+            exit 1
+          fi
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          python - "$slug" <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          from jobwatch.prepare import job_front
+          f = job_front(open(f"applications/{sys.argv[1]}/job.md").read())
+          print(f"title={f['title'] or 'Stelle'}")
+          print(f"company={f['company'] or 'Firma'}")
+          PY
+          echo "agent=$(python -m jobwatch.config get agent || echo kopieren)" >> "$GITHUB_OUTPUT"
+          echo "model=$(python -m jobwatch.config get copilot_cli.model || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Schon beworben?
+        env:
+          COMPANY: ${{ steps.fetch.outputs.company }}
+          SLUG: ${{ steps.fetch.outputs.slug }}
+        run: |
+          python -m jobwatch.records same-company "$COMPANY" --exclude "$SLUG" > warn.txt || true
+          if [ -s warn.txt ]; then
+            sed 's/^/> ⚠️ /' warn.txt > warn.md
+            gh issue comment "$ISSUE" --body-file warn.md
+          fi
+
+      - name: Branch und Unter-Issue
+        id: task
+        env:
+          SLUG: ${{ steps.fetch.outputs.slug }}
+          TITLE: ${{ steps.fetch.outputs.title }}
+          COMPANY: ${{ steps.fetch.outputs.company }}
+          AGENT: ${{ steps.fetch.outputs.agent }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="prepare/$SLUG"
+          git checkout -b "$branch"
+          git add "applications/$SLUG/job.md"
+          git commit -m "Inserat für $TITLE bei $COMPANY gespeichert"
+          git push -u origin "$branch" --force-with-lease
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          gh label create prepare-task --color 5319E7 --description "Bewerbungspaket in Arbeit" 2>/dev/null || true
+          cat > task.md <<EOF
+          Bewerbungspaket für **$TITLE bei $COMPANY** vorbereiten.
+          <!-- paket:$SLUG -->
+
+          - Inserat: [\`applications/$SLUG/job.md\`](../blob/$branch/applications/$SLUG/job.md) auf Branch \`$branch\`
+          - Regeln: [GUARDRAILS.md](../blob/main/GUARDRAILS.md) — nur Belege aus \`profile/evidence.md\`
+          - Anleitung: \`.github/skills/tailor-application/SKILL.md\` und \`.github/skills/prepare-interview/SKILL.md\`
+
+          Ergebnis im Ordner \`applications/$SLUG/\`: \`cv.yaml\` (Variante + Brief), \`fit.md\`,
+          \`prep.md\`, \`application.md\`. Danach \`make cv VARIANT=applications/$SLUG\` und
+          \`python -m jobwatch.guard applications/$SLUG\` müssen fehlerfrei sein.
+          Einreichen macht die Person selbst.
+          EOF
+          sed -i 's/^          //' task.md
+          url=$(gh issue create --title "Vorbereiten: $TITLE bei $COMPANY" --body-file task.md --label prepare-task)
+          number=${url##*/}
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          # Als Unter-Issue verknüpfen (REST: sub_issue_id ist die interne ID, nicht die Nummer).
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$number" --jq .id)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$ISSUE/sub_issues" -F sub_issue_id="$id" >/dev/null \
+            || echo "::warning::Unter-Issue konnte nicht verknüpft werden (Funktion evtl. nicht verfügbar)"
+          python -m jobwatch.board move "$number" Gefunden || true
+
+      # --- agent: kopieren (Standard) --------------------------------------------
+      - name: Auftrag zum Kopieren
+        if: steps.fetch.outputs.agent == 'kopieren'
+        env:
+          SLUG: ${{ steps.fetch.outputs.slug }}
+          TASK: ${{ steps.task.outputs.number }}
+        run: |
+          set +e
+          python -m jobwatch.kopieren comment-paket "applications/$SLUG" > kopieren.md 2> kopieren.err
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Der Auftrag zum Kopieren liess sich nicht erstellen:"; echo; echo '```text'; cat kopieren.err; echo '```'; } > kopieren.md
+          fi
+          gh issue comment "$TASK" --body-file kopieren.md
+          [ "$TASK" != "$ISSUE" ] && gh issue comment "$ISSUE" --body "Auftrag zum Kopieren steht in #$TASK." || true
+
+      # --- agent: copilot-cli ----------------------------------------------------
+      - name: Auftrag für die Copilot CLI
+        id: prompt
+        if: steps.fetch.outputs.agent == 'copilot-cli'
+        env:
+          SLUG: ${{ steps.fetch.outputs.slug }}
+        run: |
+          set +e
+          python -m jobwatch.prepare prompt "applications/$SLUG" --out "$RUNNER_TEMP/auftrag.md" 2> prompt.err
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { echo "❌ Der Auftrag für die Copilot CLI liess sich nicht erstellen:"; echo; echo '```text'; cat prompt.err; echo '```'; } > err.md
+            gh issue comment "${{ steps.task.outputs.number }}" --body-file err.md
+            exit 1
+          fi
+
+      - name: Copilot CLI schreibt das Paket
+        id: cli
+        if: steps.fetch.outputs.agent == 'copilot-cli'
+        uses: ./.github/actions/copilot-cli
+        with:
+          token: ${{ secrets.COPILOT_GITHUB_TOKEN || github.token }}
+          prompt-file: ${{ runner.temp }}/auftrag.md
+          write: >-
+            applications/${{ steps.fetch.outputs.slug }}/cv.yaml
+            applications/${{ steps.fetch.outputs.slug }}/fit.md
+            applications/${{ steps.fetch.outputs.slug }}/prep.md
+          model: ${{ steps.fetch.outputs.model }}
+
+      - uses: ./.github/actions/setup-typst
+        if: steps.cli.outputs.status == 'ok'
+      - name: Fakten ergänzen, Guard, PDFs
+        id: finish
+        if: steps.cli.outputs.status == 'ok'
+        env:
+          SLUG: ${{ steps.fetch.outputs.slug }}
+        run: |
+          # Nur der Paketordner zählt; alles andere, was die CLI angefasst hätte, verwerfen.
+          git diff --name-only -- . ":(exclude)applications/$SLUG" | grep . && {
+            echo "::warning::Die CLI hat Dateien ausserhalb des Paketordners geändert; sie werden verworfen."
+            git checkout -- . ":(exclude)applications/$SLUG"
+          } || true
+          set +e
+          python -m jobwatch.prepare finish "applications/$SLUG" 2> finish.err
+          code=$?
+          set -e
+          cat finish.err
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -ne 0 ] && [ "$code" -ne 4 ]; then
+            exit 0   # Kommentar im nächsten Schritt
+          fi
+          scripts/build-cv.sh "applications/$SLUG" > build.txt 2>&1 || echo "BUILD_FAILED" >> build.txt
+          cat build.txt
+
+      - name: PDFs als Artefakt bereitstellen
+        if: >-
+          steps.fetch.outputs.agent == 'copilot-cli' && steps.finish.outcome == 'success' &&
+          (steps.finish.outputs.code == '0' || steps.finish.outputs.code == '4')
+        uses: actions/upload-artifact@v6
+        with:
+          name: lebenslauf-pdfs
+          path: applications/${{ steps.fetch.outputs.slug }}/build/*.pdf
+          if-no-files-found: warn
+
+      # Nur wenn «finish» wirklich lief: Die Ausgabe eines übersprungenen Schritts ist
+      # null, und in GitHub-Ausdrücken gilt null == '0' (beides wird zur Zahl 0).
+      # Ohne diese Bedingung lief der Schritt bei agent: kopieren und lokal mit.
+      - name: Pull Request eröffnen
+        if: >-
+          steps.fetch.outputs.agent == 'copilot-cli' && steps.finish.outcome == 'success' &&
+          (steps.finish.outputs.code == '0' || steps.finish.outputs.code == '4')
+        env:
+          SLUG: ${{ steps.fetch.outputs.slug }}
+          TITLE: ${{ steps.fetch.outputs.title }}
+          COMPANY: ${{ steps.fetch.outputs.company }}
+          BRANCH: ${{ steps.task.outputs.branch }}
+          TASK: ${{ steps.task.outputs.number }}
+          GUARD_CODE: ${{ steps.finish.outputs.code }}
+          SOURCE: der GitHub Copilot CLI
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/paket-pr.sh
+
+      - name: Kein Entwurf – Anleitung kommentieren
+        if: >-
+          steps.fetch.outputs.agent == 'models' ||
+          (steps.fetch.outputs.agent == 'copilot-cli' && steps.prompt.outcome == 'success' &&
+           (steps.cli.outputs.status != 'ok' || steps.finish.outcome != 'success' ||
+            (steps.finish.outputs.code != '0' && steps.finish.outputs.code != '4')))
+        env:
+          AGENT: ${{ steps.fetch.outputs.agent }}
+          STATUS: ${{ steps.cli.outputs.status }}
+          CLI_CODE: ${{ steps.cli.outputs.exit-code }}
+          CLI_LOG: ${{ steps.cli.outputs.log }}
+          FINISH_CODE: ${{ steps.finish.outputs.code }}
+          BRANCH: ${{ steps.task.outputs.branch }}
+          SLUG: ${{ steps.fetch.outputs.slug }}
+          TASK: ${{ steps.task.outputs.number }}
+        run: |
+          if [ "$AGENT" = "models" ]; then reason=retired
+          elif [ "$STATUS" = "missing-secret" ]; then reason=missing-secret
+          elif [ "$STATUS" = "ok" ] && [ "$FINISH_CODE" = "3" ]; then reason=no-output
+          else reason=failed
+          fi
+          args=(--reason "$reason" --kind paket --branch "$BRANCH" --slug "$SLUG" --exit-code "$CLI_CODE")
+          [ -n "$CLI_LOG" ] && [ "$reason" != "missing-secret" ] && args+=(--log "$CLI_LOG")
+          [ "$reason" = "failed" ] && [ "$STATUS" = "ok" ] && [ -s finish.err ] && args+=(--log finish.err)
+          python -m jobwatch.agent fallback "${args[@]}" > fallback.md
+          gh issue comment "$TASK" --body-file fallback.md
+          # Ohne Wartezeit weiter: derselbe Auftrag per Kopieren & Einfügen.
+          python -m jobwatch.kopieren comment-paket "applications/$SLUG" > kopieren.md \
+            && gh issue comment "$TASK" --body-file kopieren.md || true
+          [ "$TASK" != "$ISSUE" ] && gh issue comment "$ISSUE" --body "Für diese Stelle entstand kein Entwurf; Details und Anleitung in #$TASK." || true
+
+      # --- agent: copilot (kostenpflichtig) ------------------------------------
+      # TODO (nicht verifiziert): Die Zuweisung an den Copilot-Coding-Agenten per API
+      # verlangt ein Benutzer-Token; das GITHUB_TOKEN reicht dafür nicht. Hier wird der
+      # Bot-Login «copilot-swe-agent» über die REST-Assignees-API versucht. Falls GitHub
+      # das ändert: Issue von Hand Copilot zuweisen (Assignees -> Copilot).
+      - name: An Copilot zuweisen
+        if: steps.fetch.outputs.agent == 'copilot'
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          TASK: ${{ steps.task.outputs.number }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            gh_msg="Für \`agent: copilot\` fehlt das Secret COPILOT_ASSIGN_TOKEN. Weise #$TASK von Hand Copilot zu (rechts bei «Assignees»)."
+            GH_TOKEN="${{ github.token }}" gh issue comment "$TASK" --body "$gh_msg"
+            exit 0
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$TASK/assignees" -f "assignees[]=copilot-swe-agent" >/dev/null \
+            || GH_TOKEN="${{ github.token }}" gh issue comment "$TASK" --body "Zuweisung an Copilot fehlgeschlagen. Bitte von Hand zuweisen."
+
+      # --- agent: claude (kostenpflichtig) -------------------------------------
+      - name: Claude Code
+        if: steps.fetch.outputs.agent == 'claude'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Bereite das Bewerbungspaket in applications/${{ steps.fetch.outputs.slug }}/ vor,
+            gemäss .github/skills/tailor-application/SKILL.md und
+            .github/skills/prepare-interview/SKILL.md. GUARDRAILS.md gilt ohne Ausnahme.
+            Arbeite auf Branch ${{ steps.task.outputs.branch }} und eröffne einen PR, der
+            #${{ steps.task.outputs.number }} schliesst. Niemals etwas einreichen.
+
+      # --- agent: none -----------------------------------------------------------
+      - name: Anleitung für lokale Sitzung
+        if: steps.fetch.outputs.agent == 'none'
+        env:
+          BRANCH: ${{ steps.task.outputs.branch }}
+          SLUG: ${{ steps.fetch.outputs.slug }}
+          TASK: ${{ steps.task.outputs.number }}
+        run: |
+          python -m jobwatch.agent local --kind paket --branch "$BRANCH" --slug "$SLUG" > local.md
+          gh issue comment "$TASK" --body-file local.md
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ${{ github.event.issue.number }}
+          what: "Das Bewerbungspaket konnte nicht vorbereitet werden."

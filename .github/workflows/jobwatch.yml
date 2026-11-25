@@ -1,0 +1,97 @@
+name: Tägliche Stellensuche
+
+# Durchsucht an Werktagen früh morgens die Firmen-Feeds und Jobbörsen aus
+# jobhunter.yml und eröffnet ein Issue «JJJJ-MM-TT: N neue Stelle(n)» mit dem
+# Label jobwatch. GitHub schickt dazu eine Benachrichtigung (E-Mail/App).
+#
+# Optionale Secrets (alles funktioniert auch ohne):
+#   RESEND_API_KEY      zusätzlich eine HTML-E-Mail über resend.com (Variable
+#                       JOBWATCH_EMAIL_TO = Empfängeradresse)
+on:
+  schedule:
+    - cron: "0 5 * * 1-5"   # 06:00 bzw. 07:00 Schweizer Zeit
+  workflow_dispatch:
+
+permissions:
+  contents: write   # gesehene Stellen zurückschreiben (.jobwatch/seen.json)
+  issues: write     # Tages-Issue eröffnen
+  actions: read     # bei einem Fehler: Startzeit des Laufs lesen
+
+concurrency:
+  group: jobwatch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Eingerichtet?
+        id: ready
+        run: |
+          if [ -f jobhunter.yml ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::Noch keine jobhunter.yml — zuerst das Issue-Formular «Einrichtung» ausfüllen."; fi
+      - uses: ./.github/actions/setup-python-deps
+        if: steps.ready.outputs.ok == 'true'
+
+      - name: Feeds und Jobbörsen durchsuchen
+        id: check
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          python -m jobwatch --wide --new --json > new.json 2> summary.txt || true
+          cat summary.txt
+          echo "count=$(python -c 'import json;print(len(json.load(open("new.json"))))' 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+
+      - name: Tagesübersicht erstellen
+        if: steps.check.outputs.count != '0' && steps.check.outputs.count != ''
+        run: python -m jobwatch.digest new.json --md body.md --html body.html
+
+      - name: E-Mail über Resend (optional)
+        id: resend
+        if: steps.check.outputs.count != '0' && steps.check.outputs.count != '' && env.RESEND_API_KEY != ''
+        env:
+          MAIL_TO: ${{ vars.JOBWATCH_EMAIL_TO }}
+          MAIL_FROM: ${{ vars.JOBWATCH_EMAIL_FROM || 'onboarding@resend.dev' }}
+          COUNT: ${{ steps.check.outputs.count }}
+        run: |
+          python - <<'PY'
+          import json, os
+          json.dump({"from": os.environ["MAIL_FROM"], "to": [os.environ["MAIL_TO"]],
+                     "subject": f'Stellensuche: {os.environ["COUNT"]} neue Stelle(n)',
+                     "html": open("body.html").read()}, open("payload.json", "w"))
+          PY
+          code=$(curl -sS -o resend.txt -w '%{http_code}' -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" -H "Content-Type: application/json" \
+            --data @payload.json)
+          test "$code" = "200"
+
+      - name: Issue eröffnen
+        if: steps.check.outputs.count != '0' && steps.check.outputs.count != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNT: ${{ steps.check.outputs.count }}
+        run: |
+          gh label create jobwatch --color 0E8A16 --description "Neue Stellen aus der täglichen Suche" 2>/dev/null || true
+          gh issue create --title "$(date +%Y-%m-%d): $COUNT neue Stelle(n)" \
+            --body-file body.md --label jobwatch --assignee "${{ github.repository_owner }}"
+
+      # Immer speichern, auch nach einem Fehler weiter oben: sonst meldet der
+      # nächste Lauf dieselben Stellen erneut.
+      - name: Gesehene Stellen speichern
+        if: ${{ !cancelled() && steps.ready.outputs.ok == 'true' }}
+        run: |
+          state=$(python -m jobwatch.config get state_file)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f "$state" 2>/dev/null || exit 0
+          git diff --staged --quiet || git commit -m "Stellensuche: gesehene Stellen aktualisiert [skip ci]"
+          git push
+
+      - name: Fehler melden
+        if: ${{ failure() }}
+        uses: ./.github/actions/report-failure
+        with:
+          number: ""
+          what: "Die tägliche Stellensuche hat nicht geklappt."

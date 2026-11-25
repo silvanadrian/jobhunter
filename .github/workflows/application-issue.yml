@@ -1,0 +1,89 @@
+name: Bewerbung als Issue
+
+# Nach dem Merge eines Bewerbungspakets (applications/<slug>/application.md auf
+# main) entsteht ein Issue mit Label «application»: oben die fertigen PDFs zum
+# Herunterladen (als Release-Assets, damit die Links stabil bleiben), darunter
+# die Prüfliste «So reichst du ein». Einreichen machst du selbst. Dazu kommt
+# ein Kommentar «Stand dieser Bewerbung» mit Kästchen (Eingereicht, Gespräch …),
+# die stand.yml auswertet; bestehende offene Issues bekommen ihn beim nächsten
+# Lauf, nie doppelt.
+# Ordner, die mit «_» beginnen (Beispiele), werden übersprungen.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "applications/*/application.md"
+      - "applications/*/cv.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # PDFs als Release-Assets veröffentlichen
+  issues: write
+
+concurrency:
+  group: application-issue
+  cancel-in-progress: false
+
+jobs:
+  file:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-python-deps
+      - uses: ./.github/actions/setup-typst
+
+      - name: PDFs bauen und Issues anlegen/aktualisieren
+        run: |
+          set -euo pipefail
+          gh label create application --color 5319E7 --description "Bewerbungen" 2>/dev/null || true
+          shopt -s nullglob
+          for file in applications/*/application.md; do
+            dir=$(dirname "$file"); slug=$(basename "$dir")
+            case "$slug" in _*) continue;; esac
+            scripts/build-cv.sh "$dir" || { echo "::error::$slug: Build oder Seiten-Check fehlgeschlagen"; continue; }
+            title=$(awk '/^# /{sub(/^# */, ""); print; exit}' "$file")
+            tag="bewerbung-$slug"
+            pdfs=("$dir"/build/*.pdf)
+            # Weitere Anhänge (z. B. Arbeitszeugnisse) nur, wenn documents.store_certificates
+            # eingeschaltet ist und die Datei bewusst ins private Repository gelegt wurde.
+            if [ "$(python -m jobwatch.config get documents.store_certificates || echo False)" = "True" ]; then
+              while read -r extra; do
+                [ -f "$extra" ] && case "$extra" in */build/*) ;; *) pdfs+=("$extra");; esac
+              done < <(awk 'NR==1&&$0=="---"{fm=1;next} fm&&$0=="---"{exit} fm&&/^attach:/{l=1;next} fm&&l&&/^ *- /{sub(/^ *- */,"");print;next} fm&&l{l=0}' "$file")
+            fi
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" "${pdfs[@]}" --clobber >/dev/null
+            else
+              gh release create "$tag" "${pdfs[@]}" --title "Unterlagen — $title" --prerelease \
+                --notes "Unterlagen für «$title». Nur zum Herunterladen und selbst Einreichen." \
+                --target "$GITHUB_SHA" >/dev/null
+            fi
+            {
+              echo "**Unterlagen zum Herunterladen und selbst Einreichen:**"; echo
+              for pdf in "${pdfs[@]}"; do
+                name=$(basename "$pdf")
+                echo "- [**$name**]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$tag/$name)"
+              done
+              echo
+              awk 'NR==1 && $0=="---" {fm=1; next} fm && $0=="---" {fm=0; next} !fm' "$file" \
+                | awk 'seen || !/^# /{print} /^# /{seen=1}'
+              echo
+              echo "**Stand festhalten:** unten im Kommentar «Stand dieser Bewerbung» anhaken (z. B. «Eingereicht», erst nach Bestätigung der Firma)."
+              echo "Grund einer Absage oder Notiz? Als Kommentar: \`/outcome declined gap: …\`"
+            } > body.md
+            number=$(gh issue list --state all --label application --search "\"application:$slug\" in:body" --json number --jq '.[0].number // empty')
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --body-file body.md >/dev/null
+            else
+              url=$(gh issue create --title "$title" --body-file body.md --label application --assignee "${{ github.repository_owner }}")
+              number=${url##*/}
+            fi
+            python -m jobwatch.board move "$number" Vorbereitet || true
+            # Checkliste «Stand dieser Bewerbung» (auch für ältere, noch offene Issues; nie doppelt).
+            if [ "$(gh issue view "$number" --json state --jq .state)" = "OPEN" ]; then
+              scripts/stand-kommentar.sh "$number" "$slug" create || echo "::warning::$slug: Checkliste nicht angelegt"
+            fi
+          done
